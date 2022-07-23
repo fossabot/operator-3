@@ -1,9 +1,11 @@
 package mesh_install
 
 import (
+	"fmt"
 	"github.com/greymatter-io/operator/pkg/cuemodule"
 	"github.com/greymatter-io/operator/pkg/gmapi"
 	"github.com/greymatter-io/operator/pkg/k8sapi"
+	"github.com/greymatter-io/operator/pkg/wellknown"
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
@@ -15,17 +17,14 @@ func (i *Installer) ApplyMesh() {
 		logger.Error(err, "failed to load CUE during Apply")
 		return
 	}
+	meshInitialInstall := i.Mesh == nil
+	i.Mesh = mesh
 
 	i.OperatorCUE = freshLoadOperatorCUE
 
-	if i.Mesh == nil {
-		logger.Info("Installing Mesh", "Name", mesh)
-	} else {
-		logger.Info("Updating Mesh", "Name", i.Mesh.Name)
-	}
-
 	// Create Namespace and image pull secret if this Mesh is new.
-	if i.Mesh == nil {
+	if meshInitialInstall {
+		logger.Info("Installing Mesh", "Name", mesh)
 		namespace := &v1.Namespace{
 			TypeMeta: metav1.TypeMeta{Kind: "Namespace", APIVersion: "v1"},
 			ObjectMeta: metav1.ObjectMeta{
@@ -44,6 +43,8 @@ func (i *Installer) ApplyMesh() {
 				logger.Info("imagePullSecret not found in Core Mesh namespace", "AutoCopyImagePullSecret", i.Config.AutoCopyImagePullSecret, "Mesh Namespace", mesh.Spec.InstallNamespace)
 			}
 		}
+	} else {
+		logger.Info("Updating Mesh", "Name", mesh)
 	}
 
 	for _, watchedNS := range mesh.Spec.WatchNamespaces {
@@ -92,13 +93,22 @@ func (i *Installer) ApplyMesh() {
 	// And delete the deleted ones
 	k8sapi.DeleteAll(i.K8sClient, deletedManifestObjects)
 
-	if i.Mesh == nil {
+	if meshInitialInstall {
 		i.ConfigureMeshClient(mesh, i.Sync) // Synchronously applies the Grey Matter configuration once Control and Catalog are up
 	} else {
 		logger.Info("Applying updated mesh configs, if any")
 		i.EnsureClient("ApplyMesh")
 		go gmapi.ApplyCoreMeshConfigs(i.Client, i.OperatorCUE)
 	}
+}
 
-	i.Mesh = mesh // set this mesh as THE mesh managed by the operator
+func AddClusterLabels(tmpl v1.PodTemplateSpec, meshName, clusterName string) v1.PodTemplateSpec {
+	if tmpl.Labels == nil {
+		tmpl.Labels = make(map[string]string)
+	}
+	// For service discovery
+	tmpl.Labels[wellknown.LABEL_CLUSTER] = clusterName
+	// For Spire identification
+	tmpl.Labels[wellknown.LABEL_WORKLOAD] = fmt.Sprintf("%s.%s", meshName, clusterName)
+	return tmpl
 }
