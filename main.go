@@ -72,6 +72,7 @@ var (
 	syncSSHKeyPassword string
 	syncTag            string
 	syncBranch         string
+	syncTag            string
 	syncInterval       int
 )
 
@@ -140,7 +141,7 @@ func run() error {
 	}
 
 	// Immediately load all CUE
-	operatorCUE, _, err := cuemodule.LoadAll(cueRoot)
+	operatorCUE, initialMesh, err := cuemodule.LoadAll(cueRoot)
 	if err != nil {
 		// initial load panics if unsuccessful, because we need valid config to start up
 		panic(err)
