@@ -3,11 +3,11 @@ package gmapi
 import (
 	"context"
 	"fmt"
-	"github.com/greymatter-io/operator/pkg/cuemodule"
-	"time"
-
 	"github.com/google/uuid"
 	"github.com/greymatter-io/operator/api/v1alpha1"
+	"github.com/greymatter-io/operator/pkg/cuemodule"
+	"github.com/greymatter-io/operator/pkg/gitops"
+	"time"
 )
 
 type Client struct {
@@ -17,9 +17,10 @@ type Client struct {
 	CatalogCmds chan Cmd
 	Ctx         context.Context
 	Cancel      context.CancelFunc
+	sync        *gitops.Sync
 }
 
-func newClient(operatorCUE *cuemodule.OperatorCUE, mesh *v1alpha1.Mesh, flags ...string) (*Client, error) {
+func newClient(operatorCUE *cuemodule.OperatorCUE, mesh *v1alpha1.Mesh, sync *gitops.Sync, flags ...string) (*Client, error) {
 
 	ctxt, cancel := context.WithCancel(context.Background())
 
@@ -30,6 +31,7 @@ func newClient(operatorCUE *cuemodule.OperatorCUE, mesh *v1alpha1.Mesh, flags ..
 		CatalogCmds: make(chan Cmd),
 		Ctx:         ctxt,
 		Cancel:      cancel,
+		sync:        sync,
 	}
 
 	// Apply core Grey Matter components from CUE
@@ -144,13 +146,15 @@ func newClient(operatorCUE *cuemodule.OperatorCUE, mesh *v1alpha1.Mesh, flags ..
 }
 
 func ApplyCoreMeshConfigs(client *Client, operatorCUE *cuemodule.OperatorCUE) {
-	// by this point, GM has already been unified with THE mesh this operator manages
-	// Extract correct GM config for options - for now there's only one
-
+	// Extract 'em
 	meshConfigs, kinds, err := operatorCUE.ExtractCoreMeshConfigs()
 	if err != nil {
 		logger.Error(err, "failed to extract while attempting to apply core components mesh config - ignoring")
 		return
 	}
-	ApplyAll(client, meshConfigs, kinds)
+	// Filter by what has changed (ignore unchanged)
+	filteredMeshConfigs, filteredKinds, deleted := client.sync.SyncState.FilterChangedGM(meshConfigs, kinds)
+	_ = deleted // TODO delete the deleted - will need to update this with enough information to find it for deletion
+
+	ApplyAll(client, filteredMeshConfigs, filteredKinds)
 }

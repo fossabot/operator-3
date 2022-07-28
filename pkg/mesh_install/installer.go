@@ -16,9 +16,9 @@ import (
 	"github.com/greymatter-io/operator/api/v1alpha1"
 	"github.com/greymatter-io/operator/pkg/cfsslsrv"
 	"github.com/greymatter-io/operator/pkg/cuemodule"
+	"github.com/greymatter-io/operator/pkg/gitops"
 	"github.com/greymatter-io/operator/pkg/gmapi"
 	"github.com/greymatter-io/operator/pkg/k8sapi"
-	"github.com/greymatter-io/operator/pkg/sync"
 
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
@@ -65,11 +65,11 @@ type Installer struct {
 	clusterIngressDomain string
 
 	// Sync configuration with access to a callback for updating on git repo changes
-	Sync *sync.Sync
+	Sync *gitops.Sync
 }
 
 // New returns a new *Installer instance for installing Grey Matter components and dependencies.
-func New(c *client.Client, operatorCUE *cuemodule.OperatorCUE, initialMesh *v1alpha1.Mesh, cueRoot string, gmcli *gmapi.CLI, cfssl *cfsslsrv.CFSSLServer, sync *sync.Sync) (*Installer, error) {
+func New(c *client.Client, operatorCUE *cuemodule.OperatorCUE, initialMesh *v1alpha1.Mesh, cueRoot string, gmcli *gmapi.CLI, cfssl *cfsslsrv.CFSSLServer, sync *gitops.Sync) (*Installer, error) {
 	config, defaults := operatorCUE.ExtractConfig()
 	return &Installer{
 		CLI:         gmcli,
@@ -147,13 +147,13 @@ func (i *Installer) Start(ctx context.Context) error {
 					"Mesh", mesh)
 				return err
 			}
-			i.ConfigureMeshClient(i.Mesh)
+			i.ConfigureMeshClient(i.Mesh, i.Sync)
 			meshAlreadyDeployed = true
 			break
 		}
 	}
 
-	// called on completion of a sync cycle if there are new commits
+	// called on completion of a gitops sync cycle if there are new commits
 	i.Sync.OnSyncCompleted = func() error {
 		logger.Info("GitOps repo updated and synchronized. Reapplying configuration...")
 		// reload CUE here

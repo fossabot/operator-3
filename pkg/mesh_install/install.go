@@ -115,9 +115,12 @@ func (i *Installer) ApplyMesh(prev, mesh *v1alpha1.Mesh) {
 		logger.Error(err, "failed to extract k8s manifests")
 		return
 	}
+	changedManifestObjects, deleted := i.Sync.SyncState.FilterChangedK8s(manifestObjects)
+	manifestObjects = changedManifestObjects
+	_ = deleted // TODO, delete the deleted. How do you delete things without the whole object?
 
 	// Apply the k8s manifests we just extracted
-	logger.Info("Reapplying k8s manifests")
+	logger.Info("Applying updated Kubernetes manifests")
 	for _, manifest := range manifestObjects {
 		logger.Info("Applying manifest object:",
 			"Name", manifest.GetName(),
@@ -127,9 +130,9 @@ func (i *Installer) ApplyMesh(prev, mesh *v1alpha1.Mesh) {
 	}
 
 	if prev == nil {
-		i.ConfigureMeshClient(mesh) // Synchronously applies the Grey Matter configuration once Control and Catalog are up
+		i.ConfigureMeshClient(mesh, i.Sync) // Synchronously applies the Grey Matter configuration once Control and Catalog are up
 	} else {
-		logger.Info("Reapplying mesh configs")
+		logger.Info("Applying updated mesh configs")
 		i.EnsureClient("ApplyMesh")
 		go gmapi.ApplyCoreMeshConfigs(i.Client, i.OperatorCUE)
 	}

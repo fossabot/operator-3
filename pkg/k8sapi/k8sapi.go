@@ -2,9 +2,10 @@ package k8sapi
 
 import (
 	"context"
-
 	"k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/apiutil"
@@ -116,4 +117,12 @@ func MkPatchAction(patch func(client.Object) client.Object) ActionFunc {
 
 		return "patch", nil
 	}
+}
+
+func Delete(c *client.Client, namespace string, kind schema.ObjectKind, name string) {
+	u := &unstructured.Unstructured{}
+	u.SetName(name)
+	u.SetNamespace(namespace)
+	u.SetGroupVersionKind(kind.GroupVersionKind())
+	_ = (*c).Delete(context.Background(), u)
 }

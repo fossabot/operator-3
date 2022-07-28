@@ -74,7 +74,10 @@ type Config struct {
 }
 
 type Defaults struct {
-	SidecarList []string `json:"sidecar_list"`
+	SidecarList       []string `json:"sidecar_list"`
+	RedisHost         string   `json:"redis_host"`
+	GitOpsStateKeyGM  string   `json:"gitops_state_key_gm"`
+	GitOpsStateKeyK8s string   `json:"gitops_state_key_k8s"`
 }
 
 // ExtractConfig pulls the values from the CUE into the Config struct in Go
@@ -262,6 +265,15 @@ func (operatorCUE *OperatorCUE) ExtractRedisListener() (configObject json.RawMes
 	return extracted.RedisListener, nil
 }
 
+var KindToKeyName = map[string]string{
+	"proxy":          "proxy_key",
+	"cluster":        "cluster_key",
+	"route":          "route_key",
+	"domain":         "domain_key",
+	"listener":       "listener_key",
+	"catalogservice": "service_id",
+}
+
 type justKeys struct {
 	ProxyKey    string `json:"proxy_key"`
 	ClusterKey  string `json:"cluster_key"`
@@ -269,6 +281,7 @@ type justKeys struct {
 	DomainKey   string `json:"domain_key"`
 	ListenerKey string `json:"listener_key"`
 	ServiceID   string `json:"service_id"` // CatalogService
+	ZoneKey     string `json:"zone_key"`   // CatalogService
 }
 
 // IdentifyGMConfigObjects takes a list of raw objects and identifies them as particular GreyMatter config object types
@@ -291,6 +304,8 @@ func IdentifyGMConfigObjects(rawObjects []json.RawMessage) (kinds []string) {
 			kind = "listener"
 		} else if extracted2.ServiceID != "" {
 			kind = "catalogservice"
+		} else if extracted2.ZoneKey != "" {
+			kind = "zone"
 		}
 		kinds = append(kinds, kind)
 	}

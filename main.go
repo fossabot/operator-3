@@ -26,9 +26,9 @@ import (
 	"github.com/greymatter-io/operator/api/v1alpha1"
 	"github.com/greymatter-io/operator/pkg/cfsslsrv"
 	"github.com/greymatter-io/operator/pkg/cuemodule"
+	"github.com/greymatter-io/operator/pkg/gitops"
 	"github.com/greymatter-io/operator/pkg/gmapi"
 	"github.com/greymatter-io/operator/pkg/mesh_install"
-	"github.com/greymatter-io/operator/pkg/sync"
 	"github.com/greymatter-io/operator/pkg/webhooks"
 	configv1 "github.com/openshift/api/config/v1"
 
@@ -94,7 +94,7 @@ func run() error {
 	flag.BoolVar(&zapDevMode, "zapDevMode", false, "Configure zap logger in development mode.")
 	flag.StringVar(&pprofAddr, "pprofAddr", ":1234", "Address for pprof server; has no effect on release builds")
 
-	// Flags that enable sync configuration loading from a git repo.
+	// Flags that enable gitops configuration loading from a git repo.
 	flag.StringVar(&syncRepo, "repo", "", "Bootstrap repository for operator configuration.")
 	flag.StringVar(&syncSSHKeyPath, "sshPrivateKeyPath", "", "SSH key which has privileges to fetch the operators core configuration from Git.")
 	flag.StringVar(&syncSSHKeyPassword, "sshPrivateKeyPassword", "", "Password for the SSH key")
@@ -118,12 +118,12 @@ func run() error {
 	//go http.ListenAndServe(pprofAddr, nil) // DEBUG
 
 	// build sync options based on user configuration.
-	syncOpts := []func(*sync.Sync){}
-	syncOpts = append(syncOpts, sync.WithSSHInfo(syncSSHKeyPath, syncSSHKeyPassword))
-	syncOpts = append(syncOpts, sync.WithRepoInfo(syncRepo, syncBranch, syncTag))
+	syncOpts := []func(*gitops.Sync){}
+	syncOpts = append(syncOpts, gitops.WithSSHInfo(syncSSHKeyPath, syncSSHKeyPassword))
+	syncOpts = append(syncOpts, gitops.WithRepoInfo(syncRepo, syncBranch, syncTag))
 
 	// Create a context we can cancel and clean up our go routine with.
-	sync := sync.New(syncRepo, context.Background(), syncOpts...)
+	sync := gitops.New(syncRepo, context.Background(), syncOpts...)
 
 	if syncRepo != "" {
 		// GitDir should be cueRoot (where the operator expects to load its config from)
@@ -133,9 +133,7 @@ func run() error {
 		if err != nil {
 			return fmt.Errorf("failed to load operator initial configuration: %w", err)
 		}
-
 		// sync.Watch() will happen inside of mesh_install.New
-
 	}
 
 	// Immediately load all CUE
@@ -145,6 +143,8 @@ func run() error {
 		panic(err)
 	}
 	logger.Info(fmt.Sprintf("Loaded CUE module from %s", cueRoot))
+
+	sync.StartStateBackup(operatorCUE, initialMesh)
 
 	// Initialize operator options with set values.
 	// These values will not be replaced by any values set in a read configPath.
@@ -159,7 +159,7 @@ func run() error {
 	}
 
 	// Start up our CFSSL server for issuing two certs:
-	// 1) Webhook server certs (unless disabled in the sync config)
+	// 1) Webhook server certs (unless disabled in the gitops config)
 	// 2) SPIRE's intermediate CA for issuing identities to workloads
 	cfssl, err := cfsslsrv.New(nil, nil)
 	if err != nil {

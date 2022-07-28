@@ -1,21 +1,24 @@
-package sync
+package gitops
 
 import (
 	"context"
 	"errors"
 	"fmt"
-	"github.com/go-git/go-git/v5/plumbing/storer"
 	"log"
 	"os"
-	ctrl "sigs.k8s.io/controller-runtime"
 	"time"
+
+	ctrl "sigs.k8s.io/controller-runtime"
 
 	"github.com/go-git/go-git/v5"
 	"github.com/go-git/go-git/v5/plumbing"
+	"github.com/go-git/go-git/v5/plumbing/storer"
 	"github.com/go-git/go-git/v5/plumbing/transport/ssh"
+	"github.com/greymatter-io/operator/api/v1alpha1"
+	"github.com/greymatter-io/operator/pkg/cuemodule"
 )
 
-var logger = ctrl.Log.WithName("sync")
+var logger = ctrl.Log.WithName("gitops")
 
 type Sync struct {
 	GitDir        string
@@ -25,6 +28,7 @@ type Sync struct {
 	Branch        string
 	Tag           string
 	Interval      int
+	SyncState     *SyncState
 
 	// Internal callback that is executed at the end
 	// of every sync iteration.
@@ -96,6 +100,14 @@ func (s *Sync) Bootstrap() error {
 	}
 
 	return nil
+}
+
+// StartStateBackup creates and maintains the SyncState object and connection to Redis, which is responsible for
+// ensuring that we only apply objects that have actually *changed* during GitOps updates.
+func (s *Sync) StartStateBackup(operatorCUE *cuemodule.OperatorCUE, mesh *v1alpha1.Mesh) {
+	_, defaults := operatorCUE.ExtractConfig()
+	ss := newSyncState(defaults)
+	s.SyncState = ss
 }
 
 // Watch will kick off a loop that will pull a git project for changes on an interval
