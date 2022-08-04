@@ -157,4 +157,5 @@ func ApplyCoreMeshConfigs(client *Client, operatorCUE *cuemodule.OperatorCUE) {
 	_ = deleted // TODO delete the deleted - will need to update this with enough information to find it for deletion
 
 	ApplyAll(client, filteredMeshConfigs, filteredKinds)
+	DeleteAllByGMObjectRefs(client, deleted)
 }

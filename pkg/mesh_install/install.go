@@ -7,11 +7,9 @@ import (
 	"github.com/greymatter-io/operator/pkg/gmapi"
 	"github.com/greymatter-io/operator/pkg/k8sapi"
 	"github.com/greymatter-io/operator/pkg/wellknown"
+	appsv1 "k8s.io/api/apps/v1"
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"time"
-
-	appsv1 "k8s.io/api/apps/v1"
 )
 
 // ApplyMesh installs and updates Grey Matter core components and dependencies for a single mesh.
@@ -51,44 +49,6 @@ func (i *Installer) ApplyMesh(prev, mesh *v1alpha1.Mesh) {
 		k8sapi.Apply(i.K8sClient, secret, mesh, k8sapi.GetOrCreate)
 	}
 
-	// Label existing deployments and statefulsets in this Mesh's namespaces
-	deployments := &appsv1.DeploymentList{}
-	(*i.K8sClient).List(context.TODO(), deployments)
-	for _, deployment := range deployments.Items {
-		watched := false
-		for _, ns := range mesh.Spec.WatchNamespaces {
-			if deployment.Namespace == ns {
-				watched = true
-				break
-			}
-		}
-		if watched || deployment.Namespace == mesh.Spec.InstallNamespace {
-			if deployment.Annotations == nil {
-				deployment.Annotations = make(map[string]string)
-			}
-			deployment.Annotations[wellknown.ANNOTATION_LAST_APPLIED] = time.Now().String()
-			k8sapi.Apply(i.K8sClient, &deployment, nil, k8sapi.CreateOrUpdate)
-		}
-	}
-	statefulsets := &appsv1.StatefulSetList{}
-	(*i.K8sClient).List(context.TODO(), statefulsets)
-	for _, statefulset := range statefulsets.Items {
-		watched := false
-		for _, ns := range mesh.Spec.WatchNamespaces {
-			if statefulset.Namespace == ns {
-				watched = true
-				break
-			}
-		}
-		if watched || statefulset.Namespace == mesh.Spec.InstallNamespace {
-			if statefulset.Annotations == nil {
-				statefulset.Annotations = make(map[string]string)
-			}
-			statefulset.Annotations[wellknown.ANNOTATION_LAST_APPLIED] = time.Now().String()
-			k8sapi.Apply(i.K8sClient, &statefulset, nil, k8sapi.CreateOrUpdate)
-		}
-	}
-
 	// If we're updating an existing mesh, we need to reload the CUE before unification to avoid a situation
 	// where the old concrete values conflict with the new ones
 	// TODO once the CRD is removed, this will be redundant because the new CUE will already be reloaded into the Installer
@@ -115,24 +75,25 @@ func (i *Installer) ApplyMesh(prev, mesh *v1alpha1.Mesh) {
 		logger.Error(err, "failed to extract k8s manifests")
 		return
 	}
-	changedManifestObjects, deleted := i.Sync.SyncState.FilterChangedK8s(manifestObjects)
-	manifestObjects = changedManifestObjects
-	_ = deleted // TODO, delete the deleted. How do you delete things without the whole object?
 
-	// Apply the k8s manifests we just extracted
-	logger.Info("Applying updated Kubernetes manifests")
-	for _, manifest := range manifestObjects {
-		logger.Info("Applying manifest object:",
+	// Remove anything from the list that hasn't changed since the last known update
+	changedManifestObjects, deletedManifestObjects := i.Sync.SyncState.FilterChangedK8s(manifestObjects)
+	// Apply the changed k8s manifests
+	logger.Info("Applying updated Kubernetes manifests, if any")
+	for _, manifest := range changedManifestObjects {
+		logger.Info("Applying manifest:",
 			"Name", manifest.GetName(),
 			"Repr", manifest)
 
 		k8sapi.Apply(i.K8sClient, manifest, mesh, k8sapi.CreateOrUpdate)
 	}
+	// And delete the deleted ones
+	k8sapi.DeleteAll(i.K8sClient, deletedManifestObjects)
 
 	if prev == nil {
 		i.ConfigureMeshClient(mesh, i.Sync) // Synchronously applies the Grey Matter configuration once Control and Catalog are up
 	} else {
-		logger.Info("Applying updated mesh configs")
+		logger.Info("Applying updated mesh configs, if any")
 		i.EnsureClient("ApplyMesh")
 		go gmapi.ApplyCoreMeshConfigs(i.Client, i.OperatorCUE)
 	}

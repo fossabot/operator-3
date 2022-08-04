@@ -41,7 +41,13 @@ func NewGMObjectRef(objBytes []byte, kind string) *GMObjectRef {
 	// TODO confirm that the []byte representation maps 1-1 with the original object (i.e., no key rearrangement)
 	//      if it *doesn't*, then we need to rehydrate the object before hashing below
 	keyName := cuemodule.KindToKeyName[kind] // One of listener_key, proxy_key, etc., so we can look up the ID
-	zoneResult := gjson.GetBytes(objBytes, "zone_key")
+	var zoneLookupKey string
+	if kind == "catalogservice" {
+		zoneLookupKey = "mesh_id" // for catalogservice, we store the mesh_id in the zone
+	} else {
+		zoneLookupKey = "zone_key"
+	}
+	zoneResult := gjson.GetBytes(objBytes, zoneLookupKey)
 	idResult := gjson.GetBytes(objBytes, keyName)
 	hash, _ := hashstructure.Hash(objBytes, hashstructure.FormatV2, nil)
 	return &GMObjectRef{
@@ -86,17 +92,17 @@ func (ss *SyncState) FilterChangedGM(configObjects []json.RawMessage, kinds []st
 }
 
 type K8sObjectRef struct {
-	Namespace string            `json:"namespace"`
-	Kind      schema.ObjectKind `json:"kind"`
-	Name      string            `json:"name"`
-	Hash      uint64            `json:"hash"`
+	Namespace string                  `json:"namespace"`
+	Kind      schema.GroupVersionKind `json:"kind"`
+	Name      string                  `json:"name"`
+	Hash      uint64                  `json:"hash"`
 }
 
 func NewK8sObjectRef(object client.Object) *K8sObjectRef {
 	hash, _ := hashstructure.Hash(object, hashstructure.FormatV2, nil)
 	return &K8sObjectRef{
 		Namespace: object.GetNamespace(),
-		Kind:      object.GetObjectKind(),
+		Kind:      object.GetObjectKind().GroupVersionKind(),
 		Name:      object.GetName(),
 		Hash:      hash,
 	}
@@ -159,7 +165,7 @@ func newSyncState(defaults cuemodule.Defaults) *SyncState {
 				ss.previousGMHashes = loadedGMHashes
 				logger.Info("Successfully loaded GM object hashes from Redis", "key", defaults.GitOpsStateKeyGM)
 			} else {
-				logger.Info("Problem unmarshalling GM hashes from Redis", "key", defaults.GitOpsStateKeyGM)
+				logger.Error(err, "Problem unmarshalling GM hashes from Redis", "key", defaults.GitOpsStateKeyGM)
 			}
 		}
 		// if we're able to connect immediately, try to load saved K8s hashes
@@ -172,7 +178,7 @@ func newSyncState(defaults cuemodule.Defaults) *SyncState {
 				ss.previousK8sHashes = loadedK8sHashes
 				logger.Info("Successfully loaded K8s object hashes from Redis", "key", defaults.GitOpsStateKeyK8s)
 			} else {
-				logger.Info("Problem unmarshalling K8s hashes from Redis", "key", defaults.GitOpsStateKeyK8s)
+				logger.Error(err, "problem unmarshalling K8s hashes from Redis", "key", defaults.GitOpsStateKeyK8s)
 			}
 		}
 	}
@@ -229,15 +235,23 @@ func (ss *SyncState) launchAsyncStateBackupLoop(ctx context.Context, defaults cu
 }
 
 func (ss *SyncState) persistGMHashesToRedis(hashes map[string]GMObjectRef, key string) {
-	b, _ := json.Marshal(hashes)
+	b, err := json.Marshal(hashes)
+	if err != nil {
+		logger.Error(err, "Failed to serialize GM environment state hashes (for backup to Redis)", "hashes", hashes)
+		return
+	}
 	if err := ss.redis.Set(ss.ctx, key, b, 0).Err(); err != nil {
-		logger.Error(err, "Failed to save GM environment state hashes to Redis", "key", key)
+		logger.Error(err, "Failed to save GM environment state hashes to Redis", "hashes", hashes)
 	}
 }
 
 func (ss *SyncState) persistK8sHashesToRedis(hashes map[string]K8sObjectRef, key string) {
-	b, _ := json.Marshal(hashes)
+	b, err := json.Marshal(hashes)
+	if err != nil {
+		logger.Error(err, "Failed to serialize K8s environment state hashes (for backup to Redis)", "hashes", hashes)
+		return
+	}
 	if err := ss.redis.Set(ss.ctx, key, b, 0).Err(); err != nil {
-		logger.Error(err, "Failed to save K8s environment state hashes to Redis", "key", key)
+		logger.Error(err, "Failed to save K8s environment state hashes to Redis", "hashes", hashes)
 	}
 }
