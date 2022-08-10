@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/go-git/go-git/v5/plumbing/storer"
 	"os"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"time"
@@ -21,6 +22,7 @@ type Sync struct {
 	SSHPassphrase string
 	Remote        string
 	Branch        string
+	Tag           string
 	Interval      int
 
 	// Internal callback that is executed at the end
@@ -32,11 +34,10 @@ type Sync struct {
 // New sync will build a sync with provided constructor options.
 // A remote should be specified it attempting to fetch
 // config from a remote repo. If not specified, operator
-// will use it's default bundled config.
+// will use its default bundled config.
 func New(remote string, ctx context.Context, options ...func(*Sync)) *Sync {
 	s := &Sync{
 		Remote: remote,
-		Branch: "main", // default branch, can be overwritten
 		ctx:    ctx,
 	}
 
@@ -59,10 +60,21 @@ func WithSSHInfo(privateKeyPath, password string) func(*Sync) {
 
 // WithRepoInfo will set target repository information
 // on a sync configuration object.
-func WithRepoInfo(remote, branch string) func(*Sync) {
+func WithRepoInfo(remote, branch string, tag string) func(*Sync) {
+	// If neither a branch nor a tag is specified, default to the main branch
+	if branch == "" && tag == "" {
+		branch = "main"
+	}
+
+	// You cannot specify both a branch and a tag
+	if branch != "" && tag != "" {
+		panic("You must specify a branch OR a tag for GitOps, not both")
+	}
+
 	return func(s *Sync) {
 		s.Remote = remote
 		s.Branch = branch
+		s.Tag = tag
 	}
 }
 
@@ -131,9 +143,17 @@ func clone(s *Sync) error {
 		s.GitDir, _ = os.Getwd()
 	}
 
+	var refName plumbing.ReferenceName
+	if s.Branch != "" {
+		refName = plumbing.NewBranchReferenceName(s.Branch)
+	}
+	if s.Tag != "" {
+		refName = plumbing.NewTagReferenceName(s.Tag)
+	}
+
 	opts := &git.CloneOptions{
 		URL:               s.Remote,
-		ReferenceName:     plumbing.NewBranchReferenceName(s.Branch),
+		ReferenceName:     refName,
 		RecurseSubmodules: git.DefaultSubmoduleRecursionDepth, // we need this to pull the cue config submodules
 	}
 
@@ -170,6 +190,7 @@ func gitUpdate(sc *Sync) (string, error) {
 	opts := &git.FetchOptions{
 		Auth:            nil,
 		InsecureSkipTLS: true,
+		Tags:            git.AllTags,
 	}
 
 	if sc.SSHPrivateKey != "" {
@@ -188,43 +209,59 @@ func gitUpdate(sc *Sync) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	branch := plumbing.NewBranchReferenceName(sc.Branch)
-	if branch == "" {
-		return "", fmt.Errorf("missing git branch")
-	}
 
-	// Attempt a checkout WITH create, but throw away the error. :(
-	// NOTE(cm): we throw this error away, because we haven't figured out
-	// how to reliably continue when a harmless "branch exists" error is
-	// returned. I find this library difficult to use, but a pure Go git
-	// implementation is worth it.
-	wt.Checkout(&git.CheckoutOptions{
-		Branch: branch,
-		Create: true,
-		Force:  true,
-	})
+	// Behavior is now different depending on whether we're pointed at a branch or a tag
+	var refName plumbing.ReferenceName
+	if sc.Branch != "" {
+		refName = plumbing.NewBranchReferenceName(sc.Branch)
 
-	// Do checkout WITHOUT create. Required for a pull operation.
-	if err := wt.Checkout(&git.CheckoutOptions{
-		Branch: branch,
-		Create: false,
-		Force:  true,
-	}); err != nil {
-		return "", fmt.Errorf("failed to successfully checkout: %w", err)
-	}
+		// Attempt a checkout WITH create, but throw away the error. :(
+		// NOTE(cm): we throw this error away, because we haven't figured out
+		// how to reliably continue when a harmless "branch exists" error is
+		// returned. I find this library difficult to use, but a pure Go git
+		// implementation is worth it.
+		wt.Checkout(&git.CheckoutOptions{
+			Branch: refName,
+			Create: true,
+			Force:  true,
+		})
 
-	// Do the pull
-	if err := wt.Pull(&git.PullOptions{
-		RemoteName:        "origin",
-		ReferenceName:     branch,
-		SingleBranch:      true,
-		Auth:              opts.Auth,
-		Force:             true,
-		InsecureSkipTLS:   true,
-		RecurseSubmodules: git.DefaultSubmoduleRecursionDepth,
-	}); err != nil {
-		if !errors.Is(err, git.NoErrAlreadyUpToDate) {
-			return "", fmt.Errorf("failed to pull changes from remote: %w", err)
+		// Do checkout WITHOUT create. Required for a pull operation.
+		if err := wt.Checkout(&git.CheckoutOptions{
+			Branch: refName,
+			Create: false,
+			Force:  true,
+		}); err != nil {
+			return "", fmt.Errorf("failed to successfully checkout: %w", err)
+		}
+
+		// Do the pull
+		if err := wt.Pull(&git.PullOptions{
+			RemoteName:        "origin",
+			ReferenceName:     refName,
+			SingleBranch:      true,
+			Auth:              opts.Auth,
+			Force:             true,
+			InsecureSkipTLS:   true,
+			RecurseSubmodules: git.DefaultSubmoduleRecursionDepth,
+		}); err != nil {
+			if !errors.Is(err, git.NoErrAlreadyUpToDate) {
+				return "", fmt.Errorf("failed to pull changes from remote: %w", err)
+			}
+		}
+
+	} else if sc.Tag != "" {
+		refName = plumbing.NewTagReferenceName(sc.Tag)
+		tagRef, err := storer.ResolveReference(repo.Storer, refName)
+		if err != nil {
+			return "", fmt.Errorf("unable to resolve tag '%s': %w", sc.Tag, err)
+		}
+		err = wt.Checkout(&git.CheckoutOptions{
+			Hash:  tagRef.Hash(),
+			Force: true,
+		})
+		if err != nil {
+			return "", fmt.Errorf("unable to checkout tag '%s': %w", sc.Tag, err)
 		}
 	}
 
