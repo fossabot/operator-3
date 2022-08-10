@@ -131,14 +131,17 @@ func MkPatchAction(patch func(client.Object) client.Object) ActionFunc {
 
 func DeleteAll(c *client.Client, deleted []gitops.K8sObjectRef) {
 	for _, obj := range deleted {
-		Delete(c, obj)
+		err := Delete(c, obj)
+		if err != nil {
+			logger.Error(err, "Failed to delete object", "Object", obj.Name)
+		}
 	}
 }
 
-func Delete(c *client.Client, obj gitops.K8sObjectRef) {
+func Delete(c *client.Client, obj gitops.K8sObjectRef) error {
 	u := &unstructured.Unstructured{}
 	u.SetName(obj.Name)
 	u.SetNamespace(obj.Namespace)
 	u.SetGroupVersionKind(obj.Kind)
-	_ = (*c).Delete(context.Background(), u)
+	return (*c).Delete(context.Background(), u)
 }

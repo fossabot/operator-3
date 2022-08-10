@@ -171,33 +171,9 @@ func NewSyncState(ctx context.Context, defaults cuemodule.Defaults) *SyncState {
 
 	// immediately attempt to connect to Redis
 	err := ss.redisConnect()
-	if err == nil {
-		// if we're able to connect immediately, try to load saved GM hashes
-		loadedGMHashes := make(map[string]GMObjectRef)
-		resultGM := ss.redis.Get(ctx, defaults.GitOpsStateKeyGM)
-		bsGM, err := resultGM.Bytes()
-		if err == nil { // if NO error, unmarshall the map
-			err = json.Unmarshal(bsGM, &loadedGMHashes)
-			if err == nil { // also no unmarshall error
-				ss.previousGMHashes = loadedGMHashes
-				logger.Info("Successfully loaded GM object hashes from Redis", "key", defaults.GitOpsStateKeyGM)
-			} else {
-				logger.Error(err, "Problem unmarshalling GM hashes from Redis", "key", defaults.GitOpsStateKeyGM)
-			}
-		}
-		// if we're able to connect immediately, try to load saved K8s hashes
-		loadedK8sHashes := make(map[string]K8sObjectRef)
-		resultK8s := ss.redis.Get(ctx, defaults.GitOpsStateKeyK8s)
-		bsK8s, err := resultK8s.Bytes()
-		if err == nil { // if NO error, unmarshall the map
-			err = json.Unmarshal(bsK8s, &loadedK8sHashes)
-			if err == nil { // also no unmarshall error
-				ss.previousK8sHashes = loadedK8sHashes
-				logger.Info("Successfully loaded K8s object hashes from Redis", "key", defaults.GitOpsStateKeyK8s)
-			} else {
-				logger.Error(err, "problem unmarshalling K8s hashes from Redis", "key", defaults.GitOpsStateKeyK8s)
-			}
-		}
+	if err != nil {
+		logger.Error(err, "Didn't successfully connect to redis...")
+		return &SyncState{}
 	}
 
 	// if we're able to connect immediately, try to load saved GM hashes
