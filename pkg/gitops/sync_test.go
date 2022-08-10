@@ -10,7 +10,7 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
-var (
+const (
 	gitRemote = "git@github.com:greymatter-io/gitops-core.git"
 )
 
@@ -20,14 +20,15 @@ func TestNewSyncOpts(t *testing.T) {
 	defer cancel()
 
 	cases := map[string]struct {
-		remote string
-		opts   []func(*Sync)
-		want   *Sync
+		remote   string
+		opts     []func(*Sync)
+		expected *Sync
 	}{
 		"defaults": {
 			remote: "",
-			opts:   []func(*Sync){},
-			want: &Sync{
+			opts:   []func(*Sync){WithRepoInfo(gitRemote, "main", "")},
+			expected: &Sync{
+				Remote: gitRemote,
 				Branch: "main",
 				ctx:    ctx,
 				cancel: cancel,
@@ -35,8 +36,8 @@ func TestNewSyncOpts(t *testing.T) {
 		},
 		"with-ssh-info": {
 			remote: gitRemote,
-			opts:   []func(*Sync){WithSSHInfo("./my/key/path.key", "my-pass")},
-			want: &Sync{
+			opts:   []func(*Sync){WithRepoInfo(gitRemote, "main", ""), WithSSHInfo("./my/key/path.key", "my-pass")},
+			expected: &Sync{
 				Remote:        gitRemote,
 				Branch:        "main",
 				ctx:           ctx,
@@ -47,8 +48,8 @@ func TestNewSyncOpts(t *testing.T) {
 		},
 		"with-repo-info": {
 			remote: gitRemote,
-			opts:   []func(*Sync){WithRepoInfo(gitRemote, "diff-branch")},
-			want: &Sync{
+			opts:   []func(*Sync){WithRepoInfo(gitRemote, "diff-branch", "")},
+			expected: &Sync{
 				Remote: gitRemote,
 				Branch: "diff-branch",
 				ctx:    ctx,
@@ -57,8 +58,8 @@ func TestNewSyncOpts(t *testing.T) {
 		},
 		"with-callback": {
 			remote: gitRemote,
-			opts:   []func(*Sync){WithOnSyncCompleted(callback)},
-			want: &Sync{
+			opts:   []func(*Sync){WithRepoInfo(gitRemote, "main", ""), WithOnSyncCompleted(callback)},
+			expected: &Sync{
 				Remote:          gitRemote,
 				Branch:          "main",
 				ctx:             ctx,
@@ -72,11 +73,11 @@ func TestNewSyncOpts(t *testing.T) {
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
 			got := New(tc.remote, ctx, cancel, tc.opts...)
-			assert.Equal(t, tc.want.Branch, got.Branch)
-			assert.Equal(t, tc.want.Remote, got.Remote)
+			assert.Equal(t, tc.expected.Branch, got.Branch)
+			assert.Equal(t, tc.expected.Remote, got.Remote)
 
-			assert.Equal(t, tc.want.SSHPassphrase, got.SSHPassphrase)
-			assert.Equal(t, tc.want.SSHPrivateKey, got.SSHPrivateKey)
+			assert.Equal(t, tc.expected.SSHPassphrase, got.SSHPassphrase)
+			assert.Equal(t, tc.expected.SSHPrivateKey, got.SSHPrivateKey)
 
 			if name == "with-callback" {
 				assert.Equal(t, true, assert.NotEmpty(t, got.OnSyncCompleted))
@@ -91,7 +92,7 @@ func TestSyncLifecycle(t *testing.T) {
 	path := filepath.Join(os.Getenv("HOME"), ".ssh", "id_ed25519")
 
 	// create a new sync instance
-	// We want an ssh key with no password protection
+	// We expected an ssh key with no password protection
 	ctx, cancel := context.WithCancel(context.Background())
 	s := New(gitRemote, ctx, cancel, WithSSHInfo(path, ""))
 	s.GitDir = "/tmp/operator-tests/checkout"

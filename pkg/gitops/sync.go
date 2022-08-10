@@ -34,16 +34,18 @@ type Sync struct {
 	// of every sync iteration.
 	OnSyncCompleted func() error
 	ctx             context.Context
+	cancel          func()
 }
 
-// New sync will build a sync with provided constructor options.
+// New will build a sync with provided constructor options.
 // A remote should be specified it attempting to fetch
 // config from a remote repo. If not specified, operator
 // will use its default bundled config.
-func New(remote string, ctx context.Context, options ...func(*Sync)) *Sync {
+func New(remote string, ctx context.Context, cancel func(), options ...func(*Sync)) *Sync {
 	s := &Sync{
 		Remote: remote,
 		ctx:    ctx,
+		cancel: cancel,
 	}
 
 	// iterate through our options and do overrides.
@@ -104,10 +106,45 @@ func (s *Sync) Bootstrap() error {
 
 // StartStateBackup creates and maintains the SyncState object and connection to Redis, which is responsible for
 // ensuring that we only apply objects that have actually *changed* during GitOps updates.
-func (s *Sync) StartStateBackup(operatorCUE *cuemodule.OperatorCUE, mesh *v1alpha1.Mesh) {
+func (s *Sync) StartStateBackup(ctx context.Context, operatorCUE *cuemodule.OperatorCUE, mesh *v1alpha1.Mesh) {
 	_, defaults := operatorCUE.ExtractConfig()
-	ss := newSyncState(defaults)
+	ss := NewSyncState(ctx, defaults)
 	s.SyncState = ss
+
+	// cleanup routine that is executed
+	// once an operator receives a done signal from the context.
+	go func() {
+		<-ctx.Done()
+		err := s.Close()
+		if err != nil {
+			// If we fail to close the sync connection we need to blow up
+			// so users can see why that was the case.
+			panic("Failed to close internal sync connections: " + err.Error())
+		}
+	}()
+}
+
+// Close cleans up open sync connections when the operator dies so it
+// doesn't linger and waste resources.
+func (s *Sync) Close() error {
+	// Close any open watches
+	if s.cancel != nil {
+		s.cancel()
+	}
+
+	// we return nil if we detect that SyncState is nil
+	// since we can assume no redis connection has been
+	// established other this would exist.
+	if s.SyncState == nil {
+		return nil
+	}
+
+	// Cleanup our open channels and close the go routines
+	for _, ch := range s.SyncState.saveChans {
+		close(ch)
+	}
+
+	return s.SyncState.redis.Close()
 }
 
 // Watch will kick off a loop that will pull a git project for changes on an interval

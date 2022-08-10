@@ -7,14 +7,15 @@ import (
 	"context"
 	"encoding/base64"
 	"fmt"
+	"strconv"
+	"sync"
+	"time"
+
 	"github.com/greymatter-io/operator/api/v1alpha1"
 	"github.com/greymatter-io/operator/pkg/cuemodule"
 	"github.com/greymatter-io/operator/pkg/gitops"
 	"github.com/greymatter-io/operator/pkg/wellknown"
 	ctrl "sigs.k8s.io/controller-runtime"
-	"strconv"
-	"sync"
-	"time"
 )
 
 var (
@@ -59,8 +60,8 @@ func New(ctx context.Context, operatorCUE *cuemodule.OperatorCUE) (*CLI, error) 
 	return gmcli, nil
 }
 
-// ConfigureMeshClient initializes or updates a Client with flags specifying connection options
-// for reaching Control and Catalog for the given Mesh CR.
+// ConfigureMeshClient initializes or updates a greymatter CLI client utilizing a base64 encoded
+// config.toml file.
 func (c *CLI) ConfigureMeshClient(mesh *v1alpha1.Mesh, sync *gitops.Sync) {
 	conf := mkCLIConfig( // TODO this should come from config
 		// control

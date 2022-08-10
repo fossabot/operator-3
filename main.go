@@ -17,7 +17,6 @@ limitations under the License.
 package main
 
 import (
-	"context"
 	"errors"
 	"flag"
 	"fmt"
@@ -107,6 +106,9 @@ func run() error {
 	opts.BindFlags(flag.CommandLine)
 	ctrl.SetLogger(zap.New(zap.UseFlagOptions(&opts)))
 
+	// Create context for goroutine cleanup
+	ctx := ctrl.SetupSignalHandler()
+
 	// We have to call Parse late for some reason
 	flag.Parse()
 
@@ -123,7 +125,7 @@ func run() error {
 	syncOpts = append(syncOpts, gitops.WithRepoInfo(syncRepo, syncBranch, syncTag))
 
 	// Create a context we can cancel and clean up our go routine with.
-	sync := gitops.New(syncRepo, context.Background(), syncOpts...)
+	sync := gitops.New(syncRepo, ctx, nil, syncOpts...)
 
 	if syncRepo != "" {
 		// GitDir should be cueRoot (where the operator expects to load its config from)
@@ -144,7 +146,9 @@ func run() error {
 	}
 	logger.Info(fmt.Sprintf("Loaded CUE module from %s", cueRoot))
 
-	sync.StartStateBackup(operatorCUE, initialMesh)
+	// StartStateBackup initiates the diffing mechanism internal to the operator
+	// to maintain it's state in the deployed redis instance.
+	sync.StartStateBackup(ctx, operatorCUE, initialMesh)
 
 	// Initialize operator options with set values.
 	// These values will not be replaced by any values set in a read configPath.
@@ -168,9 +172,6 @@ func run() error {
 	if err := cfssl.Start(); err != nil {
 		return fmt.Errorf("failed to start CFSSL server: %w", err)
 	}
-
-	// Create context for goroutine cleanup
-	ctx := ctrl.SetupSignalHandler()
 
 	// Initialize interface with greymatter CLI
 	gmcli, err := gmapi.New(ctx, operatorCUE)

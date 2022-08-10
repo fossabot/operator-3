@@ -4,10 +4,11 @@ import (
 	"encoding/json"
 	"fmt"
 
+	"errors"
+
 	"cuelang.org/go/cue"
 	"cuelang.org/go/cue/cuecontext"
 	"cuelang.org/go/cue/load"
-	"errors"
 	"github.com/greymatter-io/operator/api/v1alpha1"
 	opnshftsec "github.com/openshift/api/security/v1"
 	appsv1 "k8s.io/api/apps/v1"
@@ -76,6 +77,10 @@ type Config struct {
 type Defaults struct {
 	SidecarList       []string `json:"sidecar_list"`
 	RedisHost         string   `json:"redis_host"`
+	RedisPort         int      `json:"redis_int"`
+	RedisDB           int      `json:"redis_db"`
+	RedisUsername     string   `json:"redis_username"`
+	RedisPassword     string   `json:"redis_password"`
 	GitOpsStateKeyGM  string   `json:"gitops_state_key_gm"`
 	GitOpsStateKeyK8s string   `json:"gitops_state_key_k8s"`
 }
@@ -265,6 +270,8 @@ func (operatorCUE *OperatorCUE) ExtractRedisListener() (configObject json.RawMes
 	return extracted.RedisListener, nil
 }
 
+// KindToKeyName is an internal operator data structure that is utilized
+// to determine the id of an object given what kind of "type" it is.
 var KindToKeyName = map[string]string{
 	"proxy":          "proxy_key",
 	"cluster":        "cluster_key",
@@ -278,10 +285,11 @@ type justKeys struct {
 	ProxyKey    string `json:"proxy_key"`
 	ClusterKey  string `json:"cluster_key"`
 	RouteKey    string `json:"route_key"`
-	DomainKey   string `json:"domain_key"`
+	DomainKey   string `json:"domain_key"` // domains must be checked after routes
 	ListenerKey string `json:"listener_key"`
-	ServiceID   string `json:"service_id"` // CatalogService
-	ZoneKey     string `json:"zone_key"`   // CatalogService
+
+	CatalogServiceID string `json:"service_id"` // CatalogService
+	CatalogZoneKey   string `json:"zone_key"`   // CatalogService
 }
 
 // IdentifyGMConfigObjects takes a list of raw objects and identifies them as particular GreyMatter config object types
@@ -302,9 +310,9 @@ func IdentifyGMConfigObjects(rawObjects []json.RawMessage) (kinds []string) {
 			kind = "domain"
 		} else if extracted2.ListenerKey != "" {
 			kind = "listener"
-		} else if extracted2.ServiceID != "" {
+		} else if extracted2.CatalogServiceID != "" {
 			kind = "catalogservice"
-		} else if extracted2.ZoneKey != "" {
+		} else if extracted2.CatalogZoneKey != "" {
 			kind = "zone"
 		}
 		kinds = append(kinds, kind)

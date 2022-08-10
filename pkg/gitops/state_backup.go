@@ -4,21 +4,31 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"time"
+
 	"github.com/go-redis/redis/v9"
 	"github.com/greymatter-io/operator/pkg/cuemodule"
 	"github.com/mitchellh/hashstructure/v2"
 	"github.com/tidwall/gjson"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"sigs.k8s.io/controller-runtime/pkg/client"
-	"time"
 )
 
+// SyncState is the machinery responsible for managing
+// operator internal state.
+//
+// On startup a connection to redis is initialized,
+// if state already exists we sync, if it doesn't we create.
+//
+// During operations the operator will consistently reconcile
+// with redis given hashes of objects it receives from its git
+// repos. If it detects changes in hashes, it updates the state and
+// the subsequent control-plane with ONLY the changed objects.
 type SyncState struct {
-	ctx           context.Context
-	redisHost     string
-	redis         *redis.Client
-	saveGMHashes  chan interface{}
-	saveK8sHashes chan interface{}
+	ctx       context.Context
+	redisOpts *redis.Options
+	redis     *redis.Client
+	saveChans map[string]chan interface{}
 
 	previousGMHashes  map[string]GMObjectRef  // no lock because we only replace the whole map at once
 	previousK8sHashes map[string]K8sObjectRef // no lock because we only replace the whole map at once
@@ -57,6 +67,7 @@ func NewGMObjectRef(objBytes []byte, kind string) *GMObjectRef {
 		Hash: hash,
 	}
 }
+
 func (obj *GMObjectRef) HashKey() (key string) {
 	// A properly-namespaced key for the object that should uniquely identify it
 	return fmt.Sprintf("%s-%s-%s", obj.Zone, obj.Kind, obj.ID)
@@ -87,7 +98,7 @@ func (ss *SyncState) FilterChangedGM(configObjects []json.RawMessage, kinds []st
 
 	// save new hash table
 	ss.previousGMHashes = newHashes
-	go func() { ss.saveGMHashes <- struct{}{} }() // asynchronously kick-off asynchronous persistence
+	go func() { ss.saveChans["gm"] <- struct{}{} }() // asynchronously kick-off asynchronous persistence
 	return
 }
 
@@ -107,6 +118,7 @@ func NewK8sObjectRef(object client.Object) *K8sObjectRef {
 		Hash:      hash,
 	}
 }
+
 func (obj *K8sObjectRef) HashKey() (key string) {
 	// A properly-namespaced key for the object that should uniquely identify it
 	return fmt.Sprintf("%s-%s-%s", obj.Namespace, obj.Kind, obj.Name)
@@ -135,54 +147,67 @@ func (ss *SyncState) FilterChangedK8s(manifestObjects []client.Object) (filtered
 
 	// save new hash table
 	ss.previousK8sHashes = newHashes
-	go func() { ss.saveK8sHashes <- struct{}{} }() // asynchronously kick-off asynchronous persistence
+	go func() { ss.saveChans["k8s"] <- struct{}{} }() // asynchronously kick-off asynchronous persistence
 	return
 }
 
-func newSyncState(defaults cuemodule.Defaults) *SyncState {
-	ctx := context.Background() // TODO inject external context
-
+func NewSyncState(ctx context.Context, defaults cuemodule.Defaults) *SyncState {
 	ss := &SyncState{
-		ctx:               ctx,
-		redisHost:         defaults.RedisHost,
-		redis:             nil, // Filled later by .redisConnect()
-		saveGMHashes:      make(chan interface{}),
-		saveK8sHashes:     make(chan interface{}),
+		ctx: ctx,
+		redisOpts: &redis.Options{
+			Addr:       fmt.Sprintf("%s:%d", defaults.RedisHost, defaults.RedisPort),
+			DB:         defaults.RedisDB,
+			Username:   defaults.RedisUsername,
+			Password:   defaults.RedisPassword,
+			MaxRetries: -1,
+		},
+		saveChans: map[string]chan interface{}{
+			"gm":  make(chan interface{}, 1),
+			"k8s": make(chan interface{}, 1),
+		},
 		previousGMHashes:  make(map[string]GMObjectRef),
 		previousK8sHashes: make(map[string]K8sObjectRef),
 	}
 
 	// immediately attempt to connect to Redis
 	err := ss.redisConnect()
-	if err == nil {
-		// if we're able to connect immediately, try to load saved GM hashes
-		loadedGMHashes := make(map[string]GMObjectRef)
-		resultGM := ss.redis.Get(ctx, defaults.GitOpsStateKeyGM)
-		bsGM, err := resultGM.Bytes()
-		if err == nil { // if NO error, unmarshall the map
-			err = json.Unmarshal(bsGM, &loadedGMHashes)
-			if err == nil { // also no unmarshall error
-				ss.previousGMHashes = loadedGMHashes
-				logger.Info("Successfully loaded GM object hashes from Redis", "key", defaults.GitOpsStateKeyGM)
-			} else {
-				logger.Error(err, "Problem unmarshalling GM hashes from Redis", "key", defaults.GitOpsStateKeyGM)
-			}
-		}
-		// if we're able to connect immediately, try to load saved K8s hashes
-		loadedK8sHashes := make(map[string]K8sObjectRef)
-		resultK8s := ss.redis.Get(ctx, defaults.GitOpsStateKeyK8s)
-		bsK8s, err := resultK8s.Bytes()
-		if err == nil { // if NO error, unmarshall the map
-			err = json.Unmarshal(bsK8s, &loadedK8sHashes)
-			if err == nil { // also no unmarshall error
-				ss.previousK8sHashes = loadedK8sHashes
-				logger.Info("Successfully loaded K8s object hashes from Redis", "key", defaults.GitOpsStateKeyK8s)
-			} else {
-				logger.Error(err, "problem unmarshalling K8s hashes from Redis", "key", defaults.GitOpsStateKeyK8s)
-			}
-		}
+	if err != nil {
+		logger.Error(err, "Didn't successfully connect to redis...")
+		return &SyncState{}
 	}
 
+	// if we're able to connect immediately, try to load saved GM hashes
+	loadedGMHashes := make(map[string]GMObjectRef)
+	resultGM := ss.redis.Get(ctx, defaults.GitOpsStateKeyGM)
+	bsGM, err := resultGM.Bytes()
+	if err != nil {
+		logger.Error(err, "Failed to retrieve greymatter configs...")
+		return &SyncState{}
+	}
+	if err = json.Unmarshal(bsGM, &loadedGMHashes); err != nil {
+		logger.Error(err, "Problem unmarshaling GM hashes from Redis", "key", defaults.GitOpsStateKeyGM)
+		return &SyncState{}
+	}
+	ss.previousGMHashes = loadedGMHashes
+	logger.Info("Successfully loaded GM object hashes from Redis", "key", defaults.GitOpsStateKeyGM)
+
+	// if we're able to connect immediately, try to load saved K8s hashes
+	loadedK8sHashes := make(map[string]K8sObjectRef)
+	resultK8s := ss.redis.Get(ctx, defaults.GitOpsStateKeyK8s)
+	bsK8s, err := resultK8s.Bytes()
+	if err != nil {
+		logger.Error(err, "Failed to retrieve kubernetes configs...")
+		return &SyncState{}
+	}
+	if err = json.Unmarshal(bsK8s, &loadedK8sHashes); err != nil {
+		logger.Error(err, "Problem unmarshaling GM hashes from Redis", "key", defaults.GitOpsStateKeyK8s)
+		return &SyncState{}
+	}
+	ss.previousK8sHashes = loadedK8sHashes
+	logger.Info("Successfully loaded K8s object hashes from Redis", "key", defaults.GitOpsStateKeyK8s)
+
+	// After we've successfully loaded we launch our async backup loop
+	// to continue reconciliation with redis.
 	ss.launchAsyncStateBackupLoop(ctx, defaults)
 
 	return ss
@@ -192,18 +217,14 @@ func (ss *SyncState) redisConnect() error {
 	if ss.redis != nil {
 		return nil
 	}
-	// TODO don't hard-code these
-	rdb := redis.NewClient(&redis.Options{
-		Addr:       fmt.Sprintf("%s:%d", ss.redisHost, 6379),
-		DB:         0,
-		MaxRetries: -1,
-		// TODO optional configurable credentials
-	})
+
+	rdb := redis.NewClient(ss.redisOpts)
 	err := rdb.Ping(ss.ctx).Err()
-	if err == nil { // if NO error
-		ss.redis = rdb // save client
+	if err == nil { // if NO error save the client
+		ss.redis = rdb
 		logger.Info("Connected to Redis for state backup")
 	}
+
 	return err
 }
 
@@ -223,10 +244,11 @@ func (ss *SyncState) launchAsyncStateBackupLoop(ctx context.Context, defaults cu
 		for {
 			select {
 			case <-ctx.Done():
+				logger.Info("Received done signal, closing asynchronous state backup loop...")
 				return
-			case <-ss.saveGMHashes:
+			case <-ss.saveChans["gm"]:
 				ss.persistGMHashesToRedis(ss.previousGMHashes, defaults.GitOpsStateKeyGM)
-			case <-ss.saveK8sHashes:
+			case <-ss.saveChans["k8s"]:
 				ss.persistK8sHashesToRedis(ss.previousK8sHashes, defaults.GitOpsStateKeyK8s)
 			}
 		}
