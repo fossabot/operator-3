@@ -50,28 +50,25 @@ cmd_create_secrets () {
     -n $ns
 
   # SSH key secret for GitOps
-  kubectl create secret generic greymatter-sync-secret \
+  k3s kubectl create secret generic greymatter-sync-secret \
     --from-file=id_ed25519=$HOME/.ssh/id_ed25519 \
-    -n gm-operator
+    -n $ns
+
+  k3s kubectl create secret generic bugsnag-api-token \
+  --from-literal=token="$BUGSNAG_API_TOKEN" \
+  -n $ns
 
   set +u
 }
 
 # Builds docker image
 cmd_build () {
-  # Login to Nexus in order to add the greymatter CLI to the image.
-  container-registry-login $NEXUS_USER $NEXUS_PASS
-  _build_image "docker.greymatter.io/development/gm-operator:latest" "Dockerfile"
+  ./scripts/build container
   _build_manifests
 }
 
-# Build docker image helper
-_build_image () {
-  local tag=$1
-  local dockerfile=$2
-  #TODO(coleman): find a way to NOT pass creds into our container build
-  local build_args="--build-arg username=${NEXUS_USER} --build-arg password=${NEXUS_PASS}"
-  buildah bud $build_args -t "${tag}" --layers -f ${dockerfile} .
+cmd_build_debug () {
+  ./scripts/build debug_container
 }
 
 _build_manifests () {
@@ -81,50 +78,59 @@ _build_manifests () {
 # Logs into Nexus, checks if CI is running during a tag release or merge into main and if so pushes assets. 
 # Needs to download the previous assets in case the agent machine gets reassigned (in which case the build assets won't be there)
 _release_container () {
-  local latest="docker.greymatter.io/development/gm-operator:latest"
-  local intermediate="docker.greymatter.io/development/gm-operator:${BUILDKITE_PIPELINE_SLUG}_${BUILDKITE_BUILD_NUMBER}"
-  buildkite-agent artifact download "${BUILDKITE_PIPELINE_SLUG}_${BUILDKITE_BUILD_NUMBER}.tar" . --build ${BUILDKITE_BUILD_ID} --agent-access-token ${BUILDKITE_AGENT_ACCESS_TOKEN}
-  podman load -q -i "${BUILDKITE_PIPELINE_SLUG}_${BUILDKITE_BUILD_NUMBER}.tar"
+  local buildkite_tag="${BUILDKITE_PIPELINE_SLUG}_${BUILDKITE_BUILD_NUMBER}"
+  local image_name="quay.io/greymatterio/operator"
+
+  local latest="$image_name:latest"
+  local intermediate="$image_name:$buildkite_tag"
+
+  local debug_latest="$image_name:debug-latest"
+  local debug_intermediate="$image_name:debug-$buildkite_tag"
+
+  buildkite-agent artifact download "${buildkite_tag}.tar" . --build ${BUILDKITE_BUILD_ID} --agent-access-token ${BUILDKITE_AGENT_ACCESS_TOKEN}
+  buildkite-agent artifact download "${buildkite_tag}_debug.tar" . --build ${BUILDKITE_BUILD_ID} --agent-access-token ${BUILDKITE_AGENT_ACCESS_TOKEN}
+
+  podman load -q -i "${buildkite_tag}.tar"
+  podman load -q -i "${buildkite_tag}_debug.tar"
+
   container-retag-image $intermediate $latest
-  container-registry-login $NEXUS_USER $NEXUS_PASS
-  if [[ "$BUILDKITE_BRANCH" == "main" ]]; then
-    container-registry-push $latest
-  fi
-  if [[ -n "$BUILDKITE_TAG" ]]; then
-    local tagged="docker.greymatter.io/development/gm-operator:${BUILDKITE_TAG:1}"
-    container-retag-image $latest $tagged
-    container-registry-push $tagged
-  fi
-  
-  # Quay login
+  container-retag-image $debug_intermediate $debug_latest
+
   container-registry-login "$QUAY_USERNAME" "$QUAY_PASSWORD" quay.io
   if [[ "$BUILDKITE_BRANCH" == "main" ]]; then
-
-    # Operator Nexus -> Quay
-    local quay_latest="quay.io/greymatterio/operator:latest"
-    container-retag-image $latest $quay_latest
-
-    # Push re-tagged images to Quay
-    container-registry-push $quay_latest
+    container-registry-push $latest
+    container-registry-push $debug_latest
   fi
   if [[ -n "$BUILDKITE_TAG" ]]; then
+    local tagged="quay.io/greymatterio/operator:${BUILDKITE_TAG:1}"
+    local debug_tagged="quay.io/greymatterio/operator:debug-${BUILDKITE_TAG:1}"
 
-    # Operator Nexus -> Quay (tagged)
-    local quay_tagged="quay.io/greymatterio/operator:${BUILDKITE_TAG:1}"
-    container-retag-image $latest $quay_tagged
+    container-retag-image $latest $tagged
+    container-registry-push $tagged
 
-    # Push re-tagged images to Quay
-    container-registry-push $quay_tagged
+    container-retag-image $debug_latest $debug_tagged
+    container-registry-push $debug_tagged
   fi
-
 }
 
-# Exports docker image into tar
+# Exports re-tagged docker image into tar with name ${BUILDKITE_PIPELINE_SLUG}_${BUILDKITE_BUILD_NUMBER}[_OPTIONAL_SUFFIX]
+# Tag test operator image with Buildkite env vars (Coleman):
+# This avoids a failure mode where if the path-activated systemd service at /opt/k3s-import fails, our integration tests will fail in a more obvious way. Relying on "latest", as usual, is bad.
 cmd_export_container () {
-  local tarball=$1
-  local tag=$2
-  local intermediate="docker.greymatter.io/development/gm-operator:${BUILDKITE_PIPELINE_SLUG}_${BUILDKITE_BUILD_NUMBER}"
-  container-retag-image $tag $intermediate
+  local image=$1
+  local export_suffix=$2
+  local tag="${BUILDKITE_PIPELINE_SLUG}_${BUILDKITE_BUILD_NUMBER}"
+  local intermediate="quay.io/greymatterio/operator:$tag"
+  local tarball=$tag
+
+  if [ -n "$export_suffix" ]; then
+    intermediate="${intermediate}_${export_suffix}"
+    tarball="${tarball}_${export_suffix}"
+  fi
+
+  tarball="${tarball}.tar"
+
+  container-retag-image $image $intermediate
   podman save --quiet -o $tarball $intermediate
   buildkite-agent artifact upload $tarball
 }
@@ -161,9 +167,10 @@ cmd_generate_integration_tests () {
     steps_yaml+=("""
   - label: \"integration test: $C\"
     commands:
+      - git submodule update --init --recursive --remote
       - scripts/cibuild wait_for_k3s
-      - buildkite-agent artifact download \"${BUILDKITE_PIPELINE_SLUG}_${BUILDKITE_BUILD_NUMBER}.tar\" /tmp/
-      - mv /tmp/\"${BUILDKITE_PIPELINE_SLUG}_${BUILDKITE_BUILD_NUMBER}.tar\" /opt/k3s-import/
+      - buildkite-agent artifact download \"${BUILDKITE_PIPELINE_SLUG}_${BUILDKITE_BUILD_NUMBER}_debug.tar\" /tmp/
+      - mv /tmp/\"${BUILDKITE_PIPELINE_SLUG}_${BUILDKITE_BUILD_NUMBER}_debug.tar\" /opt/k3s-import/
       - k3s kubectl create namespace gm-operator
       - scripts/cibuild create_secrets gm-docker-secret gm-operator
       - sleep 5
@@ -205,7 +212,7 @@ fi
 CMD=$1
 shift
 case $CMD in
-  test|build|release|generate_integration_tests|wait_for_k3s|export_container|export_manifests|create_secrets|bootstrap)
+  test|build|build_debug|release|generate_integration_tests|wait_for_k3s|export_container|export_manifests|create_secrets|bootstrap)
     cmd_$CMD $@
     ;;
   *)

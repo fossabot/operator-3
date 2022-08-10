@@ -18,36 +18,37 @@ ARG username
 ARG password
 ENV USERNAME=$username
 ENV PASSWORD=$password
-COPY scripts/cli_greymatter_cli cli
+COPY scripts/get_greymatter_cli cli
 RUN ./cli
 
 # Build
-RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -gcflags="all=-N -l" -a -o operator main.go
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -tags "debug" -gcflags="all=-N -l" -a -o operator main.go
 
 # Get Delve
 RUN CGO_ENABLED=0 go install -ldflags "-s -w -extldflags '-static'" github.com/go-delve/delve/cmd/dlv@latest
 
-FROM ubuntu:21.04
+RUN mkdir -p /root/.ssh && \
+    ssh-keyscan github.com >> /root/.ssh/known_hosts && \
+    chmod 444 /root/.ssh/known_hosts
+
+# installing CA certs for bugsnag
+RUN apt-get update && apt-get install -y sudo ca-certificates curl
+RUN mkdir -p /usr/local/share/ca-certificates
+RUN curl -sS https://comodoca.my.salesforce.com/sfc/p/1N000002Ljih/a/1N0000000wpS/Z.rh3MmrSwuG4jT0Q64QpdfbP7Y3.HX2txjSo7katcM > /usr/local/share/ca-certificates/Sectigo_RSA_Domain_Validation_Secure_Server_CA.crt
+RUN curl -sS https://comodoca.my.salesforce.com/sfc/p/1N000002Ljih/a/3l000000VZ4M/ie5Sho19m8SLjTZkH_VL8efOD1qyGFt9h5Ju1ddtbKQ > /usr/local/share/ca-certificates/USERTrust_RSA_CA.crt
+RUN sudo update-ca-certificates
+
+FROM ubuntu:22.04
+
+ENV HOME=/app
+ENV SSH_KNOWN_HOSTS=/app/known_hosts
 
 WORKDIR /app
+COPY --from=builder /root/.ssh/known_hosts /app/known_hosts
 COPY --from=builder /workspace/operator /app/operator
 COPY --from=builder /go/bin/dlv /app/dlv
 COPY --from=builder /workspace/greymatter /bin/greymatter
 COPY --from=builder /workspace/pkg/cuemodule/core /app/core
-RUN mkdir .config && chmod 777 .config
+COPY --from=builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
+RUN mkdir /app/fetched_cue && chmod 777 /app/fetched_cue && chown 1000:1000 /app/known_hosts
 USER 1000:1000
-
-# You'll need to set command and args like this:
-# command: [
-#   "/app/dlv"
-# ]
-# args: [
-#   "--listen=:2345",
-#   "--headless=true",
-#   "--log=true",
-#   "--log-output=debugger,debuglineerr,gdbwire,lldbout,rpc",
-#   "--accept-multiclient",
-#   "--api-version=2",
-#   "exec",
-#   "/app/operator",
-# ]

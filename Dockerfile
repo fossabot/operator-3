@@ -29,7 +29,8 @@ RUN mkdir -p /root/.ssh && \
     ssh-keyscan github.com >> /root/.ssh/known_hosts && \
     chmod 444 /root/.ssh/known_hosts
 
-FROM ubuntu:21.04
+
+FROM ubuntu:22.04
 
 WORKDIR /app
 COPY --from=builder /root/.ssh/known_hosts /app/known_hosts

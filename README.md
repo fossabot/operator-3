@@ -14,6 +14,7 @@ CRD to manage mesh deployments in a Kubernetes cluster.
 ## Getting Started
 
 Make sure you have fetched all necessary dependencies:
+
 ```bash
 ./scripts/bootstrap # checks that you have the latest dependencies for the cue evaluation of manifests.
 ```
@@ -60,8 +61,7 @@ cue eval -c ./k8s/outputs --out text \
 
 > HINT: Your username and password are your Quay.io credentials authorized to the greymatterio organization.
 
-The operator will be running in a pod in the `gm-operator` namespace, and shortly after installation, the default Mesh
-CR described in `pkg/cuemodule/core/inputs.cue` will be automatically deployed.
+The operator will be running in a pod in the `gm-operator` namespace.
 
 That is all you need to do to launch the operator. Note that if you have the spire config flag set
 (in pkg/cuemodule/core/inputs.cue) then you will need to wait for the operator to insert the server-ca bootstrap certificates
@@ -75,7 +75,7 @@ correctly-annotated Deployment or StatefulSet. This makes use of the following t
 or StatefulSet itself. This is because the Pod itself must have those annotations available for the webhooks to
 inspect.)
 
-```
+```yaml
 greymatter.io/inject-sidecar-to: "3000"    # (a)
 greymatter.io/configure-sidecar: "true"    # (b)
 ```
@@ -90,7 +90,7 @@ configuration. Once it has been applied, the operator logs should show its confi
 containers in the pod, and there should shortly afterwards be a working service in the mesh with a card on the
 dashboard:
 
-```
+```yaml
 # workload.yaml
 apiVersion: apps/v1
 kind: Deployment
@@ -118,37 +118,72 @@ spec:
 
 ## Alternative Debug Build
 
-If you would like to attach a remote debugger to your operator container, do the following:
+If you are an (internal) developer or SRE working on or with the operator,
+you will likely want to use the debug build. This build comes bundled with
+a [debugger](https://github.com/go-delve/delve) and [bugsnag](https://www.bugsnag.com/), a library that automatically reports the occurance
+of fatal errors.
+
+Debug builds are marked with the debug prefix tag. For example:
+
+- debug-latest
+- debug-0.9.2
+
+You can also build images locally with `./scripts/build debug_container`.
+
+The debug image requires an api token stored in a secret. Create it before
+launching the operator and make sure to update the image tag in the `cue eval`.
+
+If all went well you should see "Initializing Bugsnag" in the operator logs.
+
+Installation with the debug container:
+
 ```bash
-# Builds and pushes quay.io/greymatterio/gm-operator:debug from Dockerfile.debug. Edit to taste.
-# You will need to have your credentials in $QUAY_USERNAME, and $QUAY_PASSWORD
-./scripts/build debug_container
-
-# Push the image you just built to Nexus
-docker push quay.io/greymatterio/gm-operator:latest-debug
-
-# Launch the operator with the debug build in debug mode.
-# Note the two tags (`operator_image` and `debug`) which are the only differences from Getting Started
-( 
+(
+# CUE config root
 cd pkg/cuemodule/core
-cue eval -c ./k8s/outputs --out text \
-         -t operator_image=quay.io/greymatterio/gm-operator:latest-debug \
-         -t debug=true \
-         -e operator_manifests_yaml | kubectl apply -f -
 
+# Necessary only so we can create the secrets before launching the operator.
+# The operator manifests create this namespace if it doesn't already exist.
+kubectl create namespace gm-operator
+
+# Image pull secret
 kubectl create secret docker-registry gm-docker-secret \
   --docker-server=quay.io \
   --docker-username=$QUAY_USERNAME \
   --docker-password=$QUAY_PASSWORD \
   -n gm-operator
+
+# GitOps SSH key
+# EDIT THIS to reflect your own, or some other SSH private key with access,
+# to the repository you would like the operator to use for GitOps. Note
+# that by default, the operator is going to fetch from 
+# https://github.com/greymatter-io/gitops-core and you would
+# need to edit the operator StatefulSet to change the argument to the
+# operator binary to change the git repository or branch.
+kubectl create secret generic greymatter-sync-secret \
+  --from-file=id_ed25519=$HOME/.ssh/id_ed25519 \
+  -n gm-operator
+
+#Bugsnag API Token - Search vault for the token value
+ kubectl create secret generic bugsnag-api-token \
+  --from-literal=token=$BUGSNAG_API_TOKEN \
+  -n gm-operator
+
+# Operator installation and supporting manifests
+cue eval -c ./k8s/outputs --out text \
+         -t operator_image=quay.io/greymatterio/operator:debug-0.9.3 \
+         -t debug=true \
+         -e operator_manifests_yaml | kubectl apply -f -
 )
   
 # To connect, first port-forward to 2345 on the operator container in a separate terminal window
 kubectl port-forward sts/gm-operator 2345 -n gm-operator
-
-# Now you can connect GoLand or VS Code or just vanilla Delve to localhost:2345 for debugging
-# Note that the `:debug` container waits for the debugger to connect before running the operator
 ```
+
+Now you can connect GoLand or VS Code or just vanilla Delve to localhost:2345 for debugging.
+
+> Note: Delve is not configured to halt the operator at startup. If you need to debug the operator
+> from startup, remove the `--continue` argument from the StatefulSet args array.
 
 ## Inspecting Manifests
 
@@ -211,6 +246,7 @@ CLI](https://mirror.openshift.com/pub/openshift-v4/x86_64/clients/ocp/).
 ## Setup
 
 Verify all dependency installations and update CUE modules:
-```
+
+```bash
 ./scripts/bootstrap
 ```
