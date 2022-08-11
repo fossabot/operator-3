@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## 0.9.3 (August 11, 2022)
 
 ### Added
 

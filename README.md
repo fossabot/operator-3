@@ -18,34 +18,43 @@ Make sure you have fetched all necessary dependencies:
 ./scripts/bootstrap # checks that you have the latest dependencies for the cue evaluation of manifests.
 ```
 
-Evaluate the kubernetes manifests using CUE:
+Then evaluate the kubernetes manifests using CUE:
 
 Note: You may run the operator locally entirely without GitOps (i.e., using only baked-in, local CUE config) by adding
 `-t test=true` to the `cue eval ...`. At the moment, you will still need to create the greymatter-sync-secret as below,
 or else remove the references to it in the operator manifests, but it won't be used with `-t test=true`.
 
 ```bash
-( 
+(
+# CUE config root
 cd pkg/cuemodule/core
-cue eval -c ./k8s/outputs --out text \
-         -t operator_image=quay.io/greymatterio/operator:0.9.1 \
-         -e operator_manifests_yaml | kubectl apply -f -
 
+# Necessary only so we can create the secrets before launching the operator.
+# The operator manifests create this namespace if it doesn't already exist.
+kubectl create namespace gm-operator
+
+# Image pull secret
 kubectl create secret docker-registry gm-docker-secret \
   --docker-server=quay.io \
   --docker-username=$QUAY_USERNAME \
   --docker-password=$QUAY_PASSWORD \
   -n gm-operator
-  
-  # EDIT THIS to reflect your own, or some other SSH private key with access,
-  # to the repository you would like the operator to use for GitOps. Note
-  # that by default, the operator is going to fetch from 
-  # https://github.com/greymatter-io/gitops-core and you would
-  # need to edit the operator StatefulSet to change the argument to the
-  # operator binary to change the git repository or branch.
-  kubectl create secret generic greymatter-sync-secret \
+
+# GitOps SSH key
+# EDIT THIS to reflect your own, or some other SSH private key with access,
+# to the repository you would like the operator to use for GitOps. Note
+# that by default, the operator is going to fetch from 
+# https://github.com/greymatter-io/gitops-core and you would
+# need to edit the operator StatefulSet to change the argument to the
+# operator binary to change the git repository or branch.
+kubectl create secret generic greymatter-sync-secret \
   --from-file=id_ed25519=$HOME/.ssh/id_ed25519 \
   -n gm-operator
+
+# Operator installation and supporting manifests
+cue eval -c ./k8s/outputs --out text \
+         -t operator_image=quay.io/greymatterio/operator:0.9.3 \
+         -e operator_manifests_yaml | kubectl apply -f -
 )
 ```
 
