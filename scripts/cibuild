@@ -153,12 +153,9 @@ _release_bundle() {
 # Creates the dynamic pipeline that starts up the greymatter mesh environment
 #  in the ephemeral ec2s. The output of the echo commands runs on the ec2, not the original machine running the rest of the pipeline.
 cmd_generate_integration_tests () {
+  local C=$1
   declare steps_yaml
-  cases=('default' 'with_spire')
-
-  for C in "${cases[@]}"; do
-    launch_cluster $C
-    steps_yaml+=("""
+  steps_yaml+=("""
   - label: \"integration test: $C\"
     commands:
       - scripts/cibuild wait_for_k3s
@@ -174,21 +171,11 @@ cmd_generate_integration_tests () {
       buildkite_build_number: $BUILDKITE_BUILD_NUMBER
       buildkite_pipeline_slug: $BUILDKITE_PIPELINE_SLUG
       integration_test_case: $C""")
-  done
   echo "
 steps: ${steps_yaml[@]}
   " | buildkite-agent pipeline upload
 }
 
-# Sends a POST request to a relay.sh webhook which triggers a process to spin up k3s cluster running on an ec2
-launch_cluster () {
-  # The tags payload will set EC2 tags that should be picked up by buildkite-agent
-  # running in the new EC2.
-  test_case=$1
-  curl -sSL -X POST \
-    -d "{ \"tags\": { \"buildkite_pipeline_slug\": \"$BUILDKITE_PIPELINE_SLUG\", \"buildkite_build_number\": \"$BUILDKITE_BUILD_NUMBER\", \"integration_test_case\": \"$test_case\"}}" \
-    "$RELAYSH_LAUNCH_K3S_EC2_WEBHOOK"
-}
 
 # Releases the docker iamge and binaries if pipeline is running in the correct context
 cmd_release () {

@@ -5,7 +5,7 @@ steps:
     commands:
       - ./scripts/cibuild bootstrap
       - ./scripts/cibuild test
-  - label: ":shipit: build"
+  - label: ":shipit: build and export container, manifests tar files"
     agents:
       container_image: ubuntu-2204-ci
     commands:
@@ -18,9 +18,21 @@ steps:
         - exit_status: "*"
           limit: 2
   - wait
-  - label: "run integration tests"
+  - trigger: "launch-k3s-buildkite"
+    label: "buildkite for default integration tests"
+    build:
+      env:
+        INTEGRATION_TEST_CASE: "default"
+
+  - trigger: "launch-k3s-buildkite"
+    label: "buildkite for with_spire integration tests"
+    build:
+      env:
+        INTEGRATION_TEST_CASE: "with_spire"
+  - label: "Generate integration test steps that run on ephemeral ec2s"
     commands:
-      - ./scripts/cibuild generate_integration_tests
+      - ./scripts/cibuild generate_integration_tests default
+      - ./scripts/cibuild generate_integration_tests with_spire
     agents:
       container_image: ubuntu-2204-ci
   - wait
