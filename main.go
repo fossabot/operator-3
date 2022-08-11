@@ -102,11 +102,6 @@ func run() error {
 	flag.StringVar(&syncBranch, "branch", "", "target branch to fetch and watch for changes in the core configuration repo. defaults to 'main' if no branch or tag specified")
 	flag.IntVar(&syncInterval, "interval", 30, "Interval to watch sync core config repo.")
 
-	// If neither a branch nor a tag is specified, default to the main branch
-	if syncBranch == "" && syncTag == "" {
-		syncBranch = "main"
-	}
-
 	// Bind flags for Zap logger options.
 	opts := zap.Options{Development: zapDevMode}
 	opts.BindFlags(flag.CommandLine)
@@ -114,6 +109,11 @@ func run() error {
 
 	// We have to call Parse late for some reason
 	flag.Parse()
+
+	// If neither a branch nor a tag is specified, default to the main branch
+	if syncBranch == "" && syncTag == "" {
+		syncBranch = "main"
+	}
 
 	//go http.ListenAndServe(pprofAddr, nil) // DEBUG
 

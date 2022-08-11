@@ -64,7 +64,7 @@ func WithSSHInfo(privateKeyPath, password string) func(*Sync) {
 func WithRepoInfo(remote, branch string, tag string) func(*Sync) {
 	// You cannot specify both a branch and a tag
 	if branch != "" && tag != "" {
-		log.Fatal("You must specify a branch OR a tag for GitOps, not both")
+		log.Fatalf("You must specify a branch OR a tag for GitOps, not both. Tag: %s, Branch: %s", tag, branch)
 	}
 
 	return func(s *Sync) {
