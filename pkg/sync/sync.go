@@ -61,11 +61,6 @@ func WithSSHInfo(privateKeyPath, password string) func(*Sync) {
 // WithRepoInfo will set target repository information
 // on a sync configuration object.
 func WithRepoInfo(remote, branch string, tag string) func(*Sync) {
-	// If neither a branch nor a tag is specified, default to the main branch
-	if branch == "" && tag == "" {
-		branch = "main"
-	}
-
 	// You cannot specify both a branch and a tag
 	if branch != "" && tag != "" {
 		panic("You must specify a branch OR a tag for GitOps, not both")
