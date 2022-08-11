@@ -1,5 +1,11 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+
+- Added support for using a tag as a GitOps target with `-tag`.
+
 ## 0.9.2 (July 15, 2022)
 
 ### Changed
