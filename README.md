@@ -1,7 +1,6 @@
 # Operator
 
-The Grey Matter Operator enables a bootstrapped mesh deployment using the `greymatter.io/v1.Mesh`
-CRD to manage mesh deployments in a Kubernetes cluster.
+The Grey Matter Operator enables a bootstrapped mesh deployment with automatic GitOps updates.
 
 ## Prerequisites
 
@@ -13,7 +12,11 @@ CRD to manage mesh deployments in a Kubernetes cluster.
 
 ## Getting Started
 
-Make sure you have fetched all necessary dependencies:
+First, you  must clone this repository _with submodules_. This can be accomplished with `--recurse-submodules` added to
+your `git clone`, or if you already cloned the repository, pull them down recursively after the fact with
+`git submodule update --init --recursive`.
+
+Now make sure you have fetched all necessary dependencies:
 ```bash
 ./scripts/bootstrap # checks that you have the latest dependencies for the cue evaluation of manifests.
 ```
@@ -60,8 +63,8 @@ cue eval -c ./k8s/outputs --out text \
 
 > HINT: Your username and password are your Quay.io credentials authorized to the greymatterio organization.
 
-The operator will be running in a pod in the `gm-operator` namespace, and shortly after installation, the default Mesh
-CR described in `pkg/cuemodule/core/inputs.cue` will be automatically deployed.
+The operator will be running in a pod in the `gm-operator` namespace, and shortly after installation, the mesh described
+in the CUE from the target GitOps repository will be applied.
 
 That is all you need to do to launch the operator. Note that if you have the spire config flag set
 (in pkg/cuemodule/core/inputs.cue) then you will need to wait for the operator to insert the server-ca bootstrap certificates

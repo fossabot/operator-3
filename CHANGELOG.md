@@ -1,5 +1,11 @@
 # Changelog
 
+## [Unrelased]
+
+### Changed
+
+- Removed the Mesh CRD and all dependent code and config
+
 ## 0.9.3 (August 11, 2022)
 
 ### Added

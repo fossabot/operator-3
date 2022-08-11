@@ -70,7 +70,6 @@ var (
 	syncRepo           string
 	syncSSHKeyPath     string
 	syncSSHKeyPassword string
-	syncTag            string
 	syncBranch         string
 	syncTag            string
 	syncInterval       int
