@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"github.com/go-git/go-git/v5/plumbing/storer"
+	"log"
 	"os"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"time"
@@ -63,7 +64,7 @@ func WithSSHInfo(privateKeyPath, password string) func(*Sync) {
 func WithRepoInfo(remote, branch string, tag string) func(*Sync) {
 	// You cannot specify both a branch and a tag
 	if branch != "" && tag != "" {
-		panic("You must specify a branch OR a tag for GitOps, not both")
+		log.Fatal("You must specify a branch OR a tag for GitOps, not both")
 	}
 
 	return func(s *Sync) {
