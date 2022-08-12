@@ -4,13 +4,11 @@ package mesh_install
 
 import (
 	"context"
-	"encoding/json"
+	"fmt"
 	"github.com/cloudflare/cfssl/csr"
 	"github.com/greymatter-io/operator/pkg/wellknown"
 	configv1 "github.com/openshift/api/config/v1"
 	appsv1 "k8s.io/api/apps/v1"
-	"reflect"
-	"sort"
 	"strings"
 	"time"
 
@@ -195,71 +193,18 @@ func (i *Installer) Start(ctx context.Context) error {
 	/////////////////////
 	// RECONCILERS SETUP
 	/////////////////////
-
-	var podReconcilers []podReconciler
+	podReconcilers := []podReconciler{injectSidecarPodReconciler}
 	// If Spire, set up to periodically reconcile the extant sidecars with the Redis listener's allowable subjects
 	if i.Config.Spire {
 		podReconcilers = append(podReconcilers, reconcileSidecarListForRedisIngress)
 	}
-	go i.reconciliationDispatchLoop(podReconcilers, nil, nil)
+	go i.reconciliationDispatchLoop(
+		podReconcilers,
+		[]deploymentReconciler{reconcileDeployment},
+		[]statefulsetReconciler{reconcileStatefulSet})
 
 	return nil
 }
-
-// Reconciles the Redis Listener's list of allowable incoming connections (for Spire) from the list of live Pods
-// with sidecars.
-func reconcileSidecarListForRedisIngress(pod *corev1.Pod, i *Installer) {
-	var redisListener json.RawMessage
-	var tempOperatorCUE cuemodule.OperatorCUE
-	sidecarSet := make(map[string]struct{})
-	for _, container := range pod.Spec.Containers {
-		for _, p := range container.Ports {
-			// TODO don't hard-code the port name, pull it from the CUE
-			// TODO also, seriously? There's got to be a better way to identify sidecars than this
-			if p.Name == "proxy" {
-				if pod.Labels == nil {
-					pod.Labels = make(map[string]string)
-				}
-				if clusterName, ok := pod.Labels[wellknown.LABEL_CLUSTER]; ok {
-					sidecarSet[clusterName] = struct{}{}
-				}
-			}
-		}
-	}
-	var sidecarList []string
-	for name := range sidecarSet {
-		sidecarList = append(sidecarList, name)
-	}
-	sort.Strings(sidecarList)
-	sort.Strings(i.Defaults.SidecarList)
-	if len(sidecarList) == 0 || reflect.DeepEqual(sidecarList, i.Defaults.SidecarList) {
-		return
-	}
-	logger.Info("The list of sidecars in the environment has changed. Updating Redis ingress for health checks.", "Updated List", sidecarList)
-	i.Defaults.SidecarList = sidecarList
-	tempOperatorCUE, err := i.OperatorCUE.TempGMValueUnifiedWithDefaults(i.Defaults)
-	if err != nil {
-		logger.Error(err,
-			"error attempting to unify mesh after sidecarList update - this should never happen - check Mesh integrity",
-			"Mesh", i.Mesh)
-		return
-	}
-	redisListener, err = tempOperatorCUE.ExtractRedisListener()
-	if err != nil {
-		logger.Error(err,
-			"error extracting redis_listener from CUE - ignoring",
-			"Mesh", i.Mesh)
-		return
-	}
-	if i.Client != nil {
-		i.Client.ControlCmds <- gmapi.MkApply("listener", redisListener)
-	}
-
-}
-
-type podReconciler func(*corev1.Pod, *Installer)
-type deploymentReconciler func(*appsv1.Deployment, *Installer)
-type statefulsetReconciler func(*appsv1.StatefulSet, *Installer)
 
 // reconciliationDispatchLoop periodically queries K8s for Pods, Deployments, and StatefulSets, and dispatches to
 // registered reconcilers to update those resources as necessary
@@ -267,6 +212,7 @@ func (i *Installer) reconciliationDispatchLoop(
 	podReconcilers []podReconciler,
 	deploymentReconcilers []deploymentReconciler,
 	statefulsetReconcilers []statefulsetReconciler) {
+	logger.Info("Beginning reconciliation loop for Pods, Deployments, and StatefulSets in watched namespaces")
 
 ReconciliationLoop:
 	for {
@@ -318,17 +264,36 @@ ReconciliationLoop:
 			}
 		}
 
-		//LoopEnd:
 		if i.Client != nil {
 			select {
 			case <-i.Client.Ctx.Done():
-				logger.Info("greymatter client context cancelled - stopping reconciliation dispatch loop")
+				logger.Info("greymatter client context cancelled - stopping reconciliation dispatch loop",
+					"error", i.Client.Ctx.Err())
+				i.RUnlock()
 				break ReconciliationLoop
 			default:
 			}
 		}
 		i.RUnlock()
 	}
+}
+
+func hasLabels(tmpl corev1.PodTemplateSpec) bool {
+	if tmpl.Labels == nil {
+		tmpl.Labels = make(map[string]string)
+	}
+	_, ok := tmpl.Labels[wellknown.LABEL_WORKLOAD]
+	return ok
+}
+func addLabels(tmpl corev1.PodTemplateSpec, meshName, clusterName string) corev1.PodTemplateSpec {
+	if tmpl.Labels == nil {
+		tmpl.Labels = make(map[string]string)
+	}
+	// For service discovery
+	tmpl.Labels[wellknown.LABEL_CLUSTER] = clusterName
+	// For Spire identification
+	tmpl.Labels[wellknown.LABEL_WORKLOAD] = fmt.Sprintf("%s.%s", meshName, clusterName)
+	return tmpl
 }
 
 // Retrieves the image pull secret in the gm-operator namespace.
