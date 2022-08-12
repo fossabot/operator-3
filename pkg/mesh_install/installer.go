@@ -8,6 +8,7 @@ import (
 	"github.com/cloudflare/cfssl/csr"
 	"github.com/greymatter-io/operator/pkg/wellknown"
 	configv1 "github.com/openshift/api/config/v1"
+	appsv1 "k8s.io/api/apps/v1"
 	"reflect"
 	"sort"
 	"strings"
@@ -191,12 +192,143 @@ func (i *Installer) Start(ctx context.Context) error {
 		i.Sync.Watch() // Executes its callback (defined above) whenever there are new commits
 	}()
 
+	/////////////////////
+	// RECONCILERS SETUP
+	/////////////////////
+
+	var podReconcilers []podReconciler
 	// If Spire, set up to periodically reconcile the extant sidecars with the Redis listener's allowable subjects
 	if i.Config.Spire {
-		go i.reconcileSidecarListForRedisIngress(i.Mesh)
+		podReconcilers = append(podReconcilers, reconcileSidecarListForRedisIngress)
 	}
+	go i.reconciliationDispatchLoop(podReconcilers, nil, nil)
 
 	return nil
+}
+
+// Reconciles the Redis Listener's list of allowable incoming connections (for Spire) from the list of live Pods
+// with sidecars.
+func reconcileSidecarListForRedisIngress(pod *corev1.Pod, i *Installer) {
+	var redisListener json.RawMessage
+	var tempOperatorCUE cuemodule.OperatorCUE
+	sidecarSet := make(map[string]struct{})
+	for _, container := range pod.Spec.Containers {
+		for _, p := range container.Ports {
+			// TODO don't hard-code the port name, pull it from the CUE
+			// TODO also, seriously? There's got to be a better way to identify sidecars than this
+			if p.Name == "proxy" {
+				if pod.Labels == nil {
+					pod.Labels = make(map[string]string)
+				}
+				if clusterName, ok := pod.Labels[wellknown.LABEL_CLUSTER]; ok {
+					sidecarSet[clusterName] = struct{}{}
+				}
+			}
+		}
+	}
+	var sidecarList []string
+	for name := range sidecarSet {
+		sidecarList = append(sidecarList, name)
+	}
+	sort.Strings(sidecarList)
+	sort.Strings(i.Defaults.SidecarList)
+	if len(sidecarList) == 0 || reflect.DeepEqual(sidecarList, i.Defaults.SidecarList) {
+		return
+	}
+	logger.Info("The list of sidecars in the environment has changed. Updating Redis ingress for health checks.", "Updated List", sidecarList)
+	i.Defaults.SidecarList = sidecarList
+	tempOperatorCUE, err := i.OperatorCUE.TempGMValueUnifiedWithDefaults(i.Defaults)
+	if err != nil {
+		logger.Error(err,
+			"error attempting to unify mesh after sidecarList update - this should never happen - check Mesh integrity",
+			"Mesh", i.Mesh)
+		return
+	}
+	redisListener, err = tempOperatorCUE.ExtractRedisListener()
+	if err != nil {
+		logger.Error(err,
+			"error extracting redis_listener from CUE - ignoring",
+			"Mesh", i.Mesh)
+		return
+	}
+	if i.Client != nil {
+		i.Client.ControlCmds <- gmapi.MkApply("listener", redisListener)
+	}
+
+}
+
+type podReconciler func(*corev1.Pod, *Installer)
+type deploymentReconciler func(*appsv1.Deployment, *Installer)
+type statefulsetReconciler func(*appsv1.StatefulSet, *Installer)
+
+// reconciliationDispatchLoop periodically queries K8s for Pods, Deployments, and StatefulSets, and dispatches to
+// registered reconcilers to update those resources as necessary
+func (i *Installer) reconciliationDispatchLoop(
+	podReconcilers []podReconciler,
+	deploymentReconcilers []deploymentReconciler,
+	statefulsetReconcilers []statefulsetReconciler) {
+
+ReconciliationLoop:
+	for {
+		time.Sleep(30 * time.Second)
+		i.RLock()
+		// List all pods anywhere
+		pods := &corev1.PodList{}
+		deployments := &appsv1.DeploymentList{}
+		statefulsets := &appsv1.StatefulSetList{}
+		for _, watchedNamespace := range i.Mesh.Spec.WatchNamespaces {
+
+			// Only look in watchedNamespace
+			opts := []client.ListOption{
+				client.InNamespace(watchedNamespace),
+			}
+
+			// Find pods and dispatch to podReconcilers
+			err := (*i.K8sClient).List(context.TODO(), pods, opts...)
+			if err != nil {
+				logger.Error(err, "failed to list pods for reconciliation", "namespace", watchedNamespace)
+			}
+			for _, pod := range pods.Items {
+				for _, reconciler := range podReconcilers {
+					reconciler(&pod, i)
+				}
+			}
+
+			// Find deployments and dispatch to deploymentReconcilers
+			err = (*i.K8sClient).List(context.TODO(), deployments, opts...)
+			if err != nil {
+				logger.Error(err, "failed to list pods for reconciliation", "namespace", watchedNamespace)
+			}
+			for _, deployment := range deployments.Items {
+
+				for _, reconciler := range deploymentReconcilers {
+					reconciler(&deployment, i)
+				}
+			}
+
+			// Find statefulsets and dispatch to statefulsetReconcilers
+			err = (*i.K8sClient).List(context.TODO(), statefulsets, opts...)
+			if err != nil {
+				logger.Error(err, "failed to list pods for reconciliation", "namespace", watchedNamespace)
+			}
+			for _, statefulset := range statefulsets.Items {
+				for _, reconciler := range statefulsetReconcilers {
+					reconciler(&statefulset, i)
+				}
+			}
+		}
+
+		//LoopEnd:
+		if i.Client != nil {
+			select {
+			case <-i.Client.Ctx.Done():
+				logger.Info("greymatter client context cancelled - stopping reconciliation dispatch loop")
+				break ReconciliationLoop
+			default:
+			}
+		}
+		i.RUnlock()
+	}
 }
 
 // Retrieves the image pull secret in the gm-operator namespace.
@@ -217,6 +349,28 @@ func getImagePullSecret(c *client.Client) *corev1.Secret {
 		Type:       operatorSecret.Type,
 		Data:       operatorSecret.Data,
 	}
+}
+
+func injectGeneratedCertificates(secret *corev1.Secret, cs *cfsslsrv.CFSSLServer) (*corev1.Secret, error) {
+	root := cs.GetRootCA()
+	ca, caKey, err := cs.RequestIntermediateCA(csr.CertificateRequest{
+		CN:         "Grey Matter SPIFFE Intermediate CA",
+		KeyRequest: &csr.KeyRequest{A: "ecdsa", S: 256},
+		Names: []csr.Name{
+			{C: "US", ST: "VA", L: "Alexandria", O: "Grey Matter"},
+		},
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	secret.StringData = map[string]string{
+		"root.crt":         string(root),
+		"intermediate.crt": strings.Join([]string{string(ca), string(root)}, "\n"),
+		"intermediate.key": string(caKey),
+	}
+
+	return secret, nil
 }
 
 func getOpenshiftClusterIngressDomain(c *client.Client, ingressName string) (string, bool) {
@@ -248,107 +402,4 @@ func isSupportedKubernetesIngressClassPresent(c client.Client) bool {
 		}
 	}
 	return false
-}
-
-func injectGeneratedCertificates(secret *corev1.Secret, cs *cfsslsrv.CFSSLServer) (*corev1.Secret, error) {
-	root := cs.GetRootCA()
-	ca, caKey, err := cs.RequestIntermediateCA(csr.CertificateRequest{
-		CN:         "Grey Matter SPIFFE Intermediate CA",
-		KeyRequest: &csr.KeyRequest{A: "ecdsa", S: 256},
-		Names: []csr.Name{
-			{C: "US", ST: "VA", L: "Alexandria", O: "Grey Matter"},
-		},
-	})
-	if err != nil {
-		return nil, err
-	}
-
-	secret.StringData = map[string]string{
-		"root.crt":         string(root),
-		"intermediate.crt": strings.Join([]string{string(ca), string(root)}, "\n"),
-		"intermediate.key": string(caKey),
-	}
-
-	return secret, nil
-}
-func (i *Installer) reconcileSidecarListForRedisIngress(mesh *v1alpha1.Mesh) {
-	var redisListener json.RawMessage
-	var tempOperatorCUE cuemodule.OperatorCUE
-	var err error
-ReconciliationLoop:
-	for {
-		time.Sleep(30 * time.Second)
-		sidecarSet := make(map[string]struct{})
-		// TODO it may be better to do Deployments and StatefulSets (but as a first pass, Pods are far simpler)
-		i.RLock()
-		// List all pods anywhere
-		pods := &corev1.PodList{}
-		(*i.K8sClient).List(context.TODO(), pods)
-		for _, pod := range pods.Items {
-			// Filter to only the relevant namespaces for this mesh
-			watched := false
-			for _, ns := range mesh.Spec.WatchNamespaces {
-				if pod.Namespace == ns {
-					watched = true
-					break
-				}
-			}
-			if watched || pod.Namespace == mesh.Spec.InstallNamespace {
-				// Further filter to only the pods with a sidecar (assumed to have a container with a "proxy" port)
-				for _, container := range pod.Spec.Containers {
-					for _, p := range container.Ports {
-						// TODO don't hard-code the port name, pull it from the CUE
-						// TODO also, seriously? There's got to be a better way to identify sidecars than this
-						if p.Name == "proxy" {
-							if pod.Labels == nil {
-								pod.Labels = make(map[string]string)
-							}
-							if clusterName, ok := pod.Labels[wellknown.LABEL_CLUSTER]; ok {
-								sidecarSet[clusterName] = struct{}{}
-							}
-						}
-					}
-				}
-			}
-		}
-		var sidecarList []string
-		for name := range sidecarSet {
-			sidecarList = append(sidecarList, name)
-		}
-		sort.Strings(sidecarList)
-		sort.Strings(i.Defaults.SidecarList)
-		if len(sidecarList) == 0 || reflect.DeepEqual(sidecarList, i.Defaults.SidecarList) {
-			goto LoopEnd
-		}
-		logger.Info("The list of sidecars in the environment has changed. Updating Redis ingress for health checks.", "Updated List", sidecarList)
-		i.Defaults.SidecarList = sidecarList
-		tempOperatorCUE, err = i.OperatorCUE.TempGMValueUnifiedWithDefaults(i.Defaults)
-		if err != nil {
-			logger.Error(err,
-				"error attempting to unify mesh after sidecarList update - this should never happen - check Mesh integrity",
-				"Mesh", i.Mesh)
-			goto LoopEnd
-		}
-		redisListener, err = tempOperatorCUE.ExtractRedisListener()
-		if err != nil {
-			logger.Error(err,
-				"error extracting redis_listener from CUE - ignoring",
-				"Mesh", i.Mesh)
-			goto LoopEnd
-		}
-		if i.Client != nil {
-			i.Client.ControlCmds <- gmapi.MkApply("listener", redisListener)
-		}
-
-	LoopEnd:
-		if i.Client != nil {
-			select {
-			case <-i.Client.Ctx.Done():
-				logger.Info("greymatter client context cancelled - stopping reconciliation loop")
-				break ReconciliationLoop
-			default:
-			}
-		}
-		i.RUnlock()
-	}
 }
