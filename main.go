@@ -139,6 +139,7 @@ func run() error {
 	}
 
 	// Immediately load all CUE
+	logger.Info(fmt.Sprintf("Loading CUE module from %s", cueRoot))
 	operatorCUE, initialMesh, err := cuemodule.LoadAll(cueRoot)
 	if err != nil {
 		// initial load panics if unsuccessful, because we need valid config to start up

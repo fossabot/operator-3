@@ -63,7 +63,7 @@ func injectSidecarPodReconciler(pod *corev1.Pod, i *Installer) {
 	// Check for a cluster label; if not found, this pod does not belong to a Mesh.
 	clusterLabel, ok := pod.Labels[wellknown.LABEL_CLUSTER]
 	if !ok {
-		logger.Info("discovered pod has no cluster label - skipping sidecar injection", "name", pod.Name, "labels", pod.Labels)
+		logger.Info("pod has no cluster label - skipping sidecar injection", "name", pod.Name, "labels", pod.Labels)
 		return
 	}
 	// Check for an existing proxy port; if found, this pod already has a sidecar.
