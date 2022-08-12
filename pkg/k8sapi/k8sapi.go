@@ -102,6 +102,15 @@ func GetOrCreate(c client.Client, obj client.Object) (string, error) {
 	return "get", nil
 }
 
+// Get is an Action checks if a resource exists in the K8s apiserver.
+func Get(c client.Client, obj client.Object) (string, error) {
+	key := client.ObjectKeyFromObject(obj)
+	if err := c.Get(context.TODO(), key, obj); err != nil {
+		return "get", err
+	}
+	return "get", nil
+}
+
 // MkPatchAction returns an Action that applies the patch specified when called.
 func MkPatchAction(patch func(client.Object) client.Object) ActionFunc {
 	return func(c client.Client, obj client.Object) (string, error) {

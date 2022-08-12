@@ -130,7 +130,7 @@ docker push quay.io/greymatterio/gm-operator:latest-debug
 # Launch the operator with the debug build in debug mode.
 # Note the two tags (`operator_image` and `debug`) which are the only differences from Getting Started
 ( 
-cd pkg/cuemodule
+cd pkg/cuemodule/core
 cue eval -c ./k8s/outputs --out text \
          -t operator_image=quay.io/greymatterio/gm-operator:latest-debug \
          -t debug=true \

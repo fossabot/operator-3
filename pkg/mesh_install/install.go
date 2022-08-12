@@ -2,6 +2,7 @@ package mesh_install
 
 import (
 	"context"
+
 	"github.com/greymatter-io/operator/api/v1alpha1"
 	"github.com/greymatter-io/operator/pkg/cuemodule"
 	"github.com/greymatter-io/operator/pkg/gmapi"
@@ -31,7 +32,15 @@ func (i *Installer) ApplyMesh(prev, mesh *v1alpha1.Mesh) {
 		k8sapi.Apply(i.K8sClient, namespace, mesh, k8sapi.GetOrCreate)
 		secret := i.imagePullSecret.DeepCopy()
 		secret.Namespace = mesh.Spec.InstallNamespace
-		k8sapi.Apply(i.K8sClient, secret, mesh, k8sapi.GetOrCreate)
+
+		if i.Config.AutoCopyImagePullSecret {
+			k8sapi.Apply(i.K8sClient, secret, mesh, k8sapi.GetOrCreate)
+		} else {
+			err := k8sapi.Apply(i.K8sClient, secret, mesh, k8sapi.Get)
+			if err != nil {
+				logger.Info("imagePullSecret not found in Core Mesh namespace", "AutoCopyImagePullSecret", i.Config.AutoCopyImagePullSecret, "Mesh Namespace", mesh.Spec.InstallNamespace)
+			}
+		}
 	}
 
 	for _, watchedNS := range mesh.Spec.WatchNamespaces {
@@ -42,11 +51,21 @@ func (i *Installer) ApplyMesh(prev, mesh *v1alpha1.Mesh) {
 				Name: watchedNS,
 			},
 		}
+
 		k8sapi.Apply(i.K8sClient, namespace, mesh, k8sapi.GetOrCreate)
 		// Copy the imagePullSecret into all watched namespaces
 		secret := i.imagePullSecret.DeepCopy()
 		secret.Namespace = watchedNS
-		k8sapi.Apply(i.K8sClient, secret, mesh, k8sapi.GetOrCreate)
+
+		if i.Config.AutoCopyImagePullSecret {
+			k8sapi.Apply(i.K8sClient, secret, mesh, k8sapi.GetOrCreate)
+			logger.Info("imagePullSecret found or created", "AutoCopyImagePullSecret", i.Config.AutoCopyImagePullSecret, "WatchNamespace", watchedNS)
+		} else {
+			err := k8sapi.Apply(i.K8sClient, secret, mesh, k8sapi.Get)
+			if err != nil {
+				logger.Info("imagePullSecret not found in watched namespace", "AutoCopyImagePullSecret", i.Config.AutoCopyImagePullSecret, "WatchNamespace", watchedNS)
+			}
+		}
 	}
 
 	// If we're updating an existing mesh, we need to reload the CUE before unification to avoid a situation
