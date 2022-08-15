@@ -4,5 +4,10 @@ agents:
 
 steps:
   - label: "Scheduled build"
-    command: ./scripts/cibuild build
-
+    commands:
+      - ./scripts/cibuild bootstrap
+      - ./scripts/cibuild build
+    retry:
+      automatic:
+        - exit_status: "*"
+          limit: 2
