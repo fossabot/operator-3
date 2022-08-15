@@ -82,6 +82,7 @@ type Defaults struct {
 	RedisDB           int      `json:"redis_db"`
 	RedisUsername     string   `json:"redis_username"`
 	RedisPassword     string   `json:"redis_password"`
+	ProxyPortName     string   `json:"proxy_port_name"`
 	GitOpsStateKeyGM  string   `json:"gitops_state_key_gm"`
 	GitOpsStateKeyK8s string   `json:"gitops_state_key_k8s"`
 }

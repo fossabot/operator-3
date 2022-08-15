@@ -54,7 +54,7 @@ func reconcileStatefulSetLabels(statefulset *appsv1.StatefulSet, i *Installer) {
 
 func reconcileDeploymentSidecarInjection(deployment *appsv1.Deployment, i *Installer) {
 	logger.Info("reconciling deployment for sidecar injection", "name", deployment.Name)
-	annotations := deployment.Annotations
+	annotations := deployment.Spec.Template.Annotations
 	// Check if sidecar injection was requested
 	if injectSidecarTo, injectSidecar := annotations[wellknown.ANNOTATION_INJECT_SIDECAR_TO_PORT]; !injectSidecar || injectSidecarTo == "" {
 		logger.Info("no inject-sidecar-to annotation, skipping", "name", deployment.Name, "annotations", annotations)
@@ -63,15 +63,13 @@ func reconcileDeploymentSidecarInjection(deployment *appsv1.Deployment, i *Insta
 	// Check for a cluster label; if not found, this pod does not belong to a Mesh.
 	clusterLabel, ok := deployment.Labels[wellknown.LABEL_CLUSTER]
 	if !ok {
-		logger.Info("pod has no cluster label - skipping sidecar injection", "name", deployment.Name, "labels", deployment.Labels)
+		logger.Info("deployment has no cluster label - skipping sidecar injection", "name", deployment.Name, "labels", deployment.Labels)
 		return
 	}
 	// Check for an existing proxy port; if found, this pod already has a sidecar.
 	for _, container := range deployment.Spec.Template.Spec.Containers {
 		for _, p := range container.Ports {
-			// TODO don't hard-code this name. Pull from the same CUE Control uses to find these
-			// or better yet, find a more reliable way to identify a sidecar. Put a label on it?
-			if p.Name == "proxy" {
+			if p.Name == i.Defaults.ProxyPortName {
 				return
 			}
 		}
@@ -87,18 +85,18 @@ func reconcileDeploymentSidecarInjection(deployment *appsv1.Deployment, i *Insta
 	deployment.Spec.Template.Spec.Containers = append(deployment.Spec.Template.Spec.Containers, container)
 	deployment.Spec.Template.Spec.Volumes = append(deployment.Spec.Template.Spec.Volumes, volumes...)
 
-	// Inject a reference to the image pull secret
-	// TODO respect
-	var hasImagePullSecret bool
-	for _, secret := range deployment.Spec.Template.Spec.ImagePullSecrets {
-		if secret.Name == "gm-docker-secret" {
-			hasImagePullSecret = true
+	if i.Config.AutoCopyImagePullSecret {
+		// Inject a reference to the image pull secret
+		var hasImagePullSecret bool
+		for _, secret := range deployment.Spec.Template.Spec.ImagePullSecrets {
+			if secret.Name == "gm-docker-secret" {
+				hasImagePullSecret = true
+			}
+		}
+		if !hasImagePullSecret {
+			deployment.Spec.Template.Spec.ImagePullSecrets = append(deployment.Spec.Template.Spec.ImagePullSecrets, corev1.LocalObjectReference{Name: "gm-docker-secret"})
 		}
 	}
-	if !hasImagePullSecret {
-		deployment.Spec.Template.Spec.ImagePullSecrets = append(deployment.Spec.Template.Spec.ImagePullSecrets, corev1.LocalObjectReference{Name: "gm-docker-secret"})
-	}
-
 	logger.Info("injecting sidecar", "name", clusterLabel, "kind", "Pod", "generateName", deployment.GenerateName+"*", "namespace", deployment.Namespace)
 	k8sapi.Apply(i.K8sClient, deployment, nil, k8sapi.CreateOrUpdate)
 }
@@ -111,7 +109,7 @@ func reconcileSidecarListForRedisIngress(pod *corev1.Pod, i *Installer) {
 	for _, container := range pod.Spec.Containers {
 		for _, p := range container.Ports {
 			// TODO look for the annotations rather than the actual presence of a sidecar, since we'll be injecting based on that
-			if p.Name == "proxy" {
+			if p.Name == i.Defaults.ProxyPortName {
 				if pod.Labels == nil {
 					pod.Labels = make(map[string]string)
 				}

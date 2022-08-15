@@ -80,7 +80,7 @@ func (wd *workloadDefaulter) handlePod(req admission.Request) admission.Response
 	// Check for an existing proxy port; if found, this pod already has a sidecar.
 	for _, container := range pod.Spec.Containers {
 		for _, p := range container.Ports {
-			if p.Name == "proxy" {
+			if p.Name == wd.Defaults.ProxyPortName {
 				return admission.ValidationResponse(true, "allowed")
 			}
 		}
