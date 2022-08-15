@@ -17,11 +17,11 @@ type statefulsetReconciler func(*appsv1.StatefulSet, *Installer)
 
 // TODO handle deletes
 // TODO rename
-func reconcileDeployment(deployment *appsv1.Deployment, i *Installer) {
+func reconcileDeploymentLabels(deployment *appsv1.Deployment, i *Installer) {
 	if hasLabels(deployment.Spec.Template) {
 		return
 	}
-	logger.Info("reconciling deployment", "name", deployment.Name)
+	logger.Info("reconciling deployment labels", "name", deployment.Name)
 	deployment.Spec.Template = addLabels(deployment.Spec.Template, i.Mesh.Name, deployment.Name)
 	annotations := deployment.Spec.Template.Annotations
 	_, injectSidecar := annotations[wellknown.ANNOTATION_INJECT_SIDECAR_TO_PORT]
@@ -35,11 +35,11 @@ func reconcileDeployment(deployment *appsv1.Deployment, i *Installer) {
 
 // TODO handle deletes
 // TODO rename
-func reconcileStatefulSet(statefulset *appsv1.StatefulSet, i *Installer) {
+func reconcileStatefulSetLabels(statefulset *appsv1.StatefulSet, i *Installer) {
 	if hasLabels(statefulset.Spec.Template) {
 		return
 	}
-	logger.Info("reconciling statefulset", "name", statefulset.Name)
+	logger.Info("reconciling statefulset labels", "name", statefulset.Name)
 	statefulset.Spec.Template = addLabels(statefulset.Spec.Template, i.Mesh.Name, statefulset.Name)
 	annotations := statefulset.Spec.Template.Annotations
 	_, injectSidecar := annotations[wellknown.ANNOTATION_INJECT_SIDECAR_TO_PORT]
@@ -52,24 +52,25 @@ func reconcileStatefulSet(statefulset *appsv1.StatefulSet, i *Installer) {
 	k8sapi.Apply(i.K8sClient, statefulset, i.owner, k8sapi.CreateOrUpdate)
 }
 
-func injectSidecarPodReconciler(pod *corev1.Pod, i *Installer) {
-	logger.Info("reconciling pod for sidecar injection", "name", pod.Name)
-	annotations := pod.Annotations
+func reconcileDeploymentSidecarInjection(deployment *appsv1.Deployment, i *Installer) {
+	logger.Info("reconciling deployment for sidecar injection", "name", deployment.Name)
+	annotations := deployment.Annotations
 	// Check if sidecar injection was requested
 	if injectSidecarTo, injectSidecar := annotations[wellknown.ANNOTATION_INJECT_SIDECAR_TO_PORT]; !injectSidecar || injectSidecarTo == "" {
-		logger.Info("no inject-sidecar-to annotation, skipping", "name", pod.Name, "annotations", annotations)
+		logger.Info("no inject-sidecar-to annotation, skipping", "name", deployment.Name, "annotations", annotations)
 		return
 	}
 	// Check for a cluster label; if not found, this pod does not belong to a Mesh.
-	clusterLabel, ok := pod.Labels[wellknown.LABEL_CLUSTER]
+	clusterLabel, ok := deployment.Labels[wellknown.LABEL_CLUSTER]
 	if !ok {
-		logger.Info("pod has no cluster label - skipping sidecar injection", "name", pod.Name, "labels", pod.Labels)
+		logger.Info("pod has no cluster label - skipping sidecar injection", "name", deployment.Name, "labels", deployment.Labels)
 		return
 	}
 	// Check for an existing proxy port; if found, this pod already has a sidecar.
-	for _, container := range pod.Spec.Containers {
+	for _, container := range deployment.Spec.Template.Spec.Containers {
 		for _, p := range container.Ports {
 			// TODO don't hard-code this name. Pull from the same CUE Control uses to find these
+			// or better yet, find a more reliable way to identify a sidecar. Put a label on it?
 			if p.Name == "proxy" {
 				return
 			}
@@ -79,26 +80,27 @@ func injectSidecarPodReconciler(pod *corev1.Pod, i *Installer) {
 	// Get a sidecar container and volumes to inject
 	container, volumes, err := i.OperatorCUE.UnifyAndExtractSidecar(clusterLabel)
 	if err != nil {
-		logger.Error(err, "unable to extract sidecar injection configuration during, suspect bad CUE", "name", pod.Name, "clusterLabel", clusterLabel)
+		logger.Error(err, "unable to extract sidecar injection configuration during, suspect bad CUE", "name", deployment.Name, "clusterLabel", clusterLabel)
 		return
 	}
 
-	pod.Spec.Containers = append(pod.Spec.Containers, container)
-	pod.Spec.Volumes = append(pod.Spec.Volumes, volumes...)
+	deployment.Spec.Template.Spec.Containers = append(deployment.Spec.Template.Spec.Containers, container)
+	deployment.Spec.Template.Spec.Volumes = append(deployment.Spec.Template.Spec.Volumes, volumes...)
 
 	// Inject a reference to the image pull secret
+	// TODO respect
 	var hasImagePullSecret bool
-	for _, secret := range pod.Spec.ImagePullSecrets {
+	for _, secret := range deployment.Spec.Template.Spec.ImagePullSecrets {
 		if secret.Name == "gm-docker-secret" {
 			hasImagePullSecret = true
 		}
 	}
 	if !hasImagePullSecret {
-		pod.Spec.ImagePullSecrets = append(pod.Spec.ImagePullSecrets, corev1.LocalObjectReference{Name: "gm-docker-secret"})
+		deployment.Spec.Template.Spec.ImagePullSecrets = append(deployment.Spec.Template.Spec.ImagePullSecrets, corev1.LocalObjectReference{Name: "gm-docker-secret"})
 	}
 
-	logger.Info("injecting sidecar", "name", clusterLabel, "kind", "Pod", "generateName", pod.GenerateName+"*", "namespace", pod.Namespace)
-	k8sapi.Apply(i.K8sClient, pod, i.owner, k8sapi.CreateOrUpdate)
+	logger.Info("injecting sidecar", "name", clusterLabel, "kind", "Pod", "generateName", deployment.GenerateName+"*", "namespace", deployment.Namespace)
+	k8sapi.Apply(i.K8sClient, deployment, nil, k8sapi.CreateOrUpdate)
 }
 
 // Reconciles the Redis Listener's list of allowable incoming connections (for Spire) from the list of live Pods

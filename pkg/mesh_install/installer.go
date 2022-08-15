@@ -193,15 +193,15 @@ func (i *Installer) Start(ctx context.Context) error {
 	/////////////////////
 	// RECONCILERS SETUP
 	/////////////////////
-	podReconcilers := []podReconciler{injectSidecarPodReconciler}
+	var podReconcilers []podReconciler
 	// If Spire, set up to periodically reconcile the extant sidecars with the Redis listener's allowable subjects
 	if i.Config.Spire {
 		podReconcilers = append(podReconcilers, reconcileSidecarListForRedisIngress)
 	}
 	go i.reconciliationDispatchLoop(
 		podReconcilers,
-		[]deploymentReconciler{reconcileDeployment},
-		[]statefulsetReconciler{reconcileStatefulSet})
+		[]deploymentReconciler{reconcileDeploymentLabels, reconcileDeploymentSidecarInjection},
+		[]statefulsetReconciler{reconcileStatefulSetLabels})
 
 	return nil
 }
