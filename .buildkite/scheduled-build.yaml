@@ -3,7 +3,11 @@ agents:
   container_image: ubuntu-2204-ci
 
 steps:
-  - label: "Scheduled build"
+  - label: "run unit tests"
+    commands:
+      - ./scripts/cibuild bootstrap
+      - ./scripts/cibuild test
+  - label: ":shipit: build"
     commands:
       - ./scripts/cibuild bootstrap
       - ./scripts/cibuild build
@@ -11,3 +15,8 @@ steps:
       automatic:
         - exit_status: "*"
           limit: 2
+  - wait
+  - label: "run integration tests"
+    commands:
+      - ./scripts/cibuild generate_integration_tests
+
