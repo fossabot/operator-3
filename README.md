@@ -1,4 +1,6 @@
 # Operator
+[![FOSSA Status](https://app.fossa.com/api/projects/git%2Bgithub.com%2Fgreymatter-io%2Foperator.svg?type=shield)](https://app.fossa.com/projects/git%2Bgithub.com%2Fgreymatter-io%2Foperator?ref=badge_shield)
+
 
 The Grey Matter Operator enables a bootstrapped mesh deployment using the `greymatter.io/v1.Mesh`
 CRD to manage mesh deployments in a Kubernetes cluster.
@@ -214,3 +216,7 @@ Verify all dependency installations and update CUE modules:
 ```
 ./scripts/bootstrap
 ```
+
+
+## License
+[![FOSSA Status](https://app.fossa.com/api/projects/git%2Bgithub.com%2Fgreymatter-io%2Foperator.svg?type=large)](https://app.fossa.com/projects/git%2Bgithub.com%2Fgreymatter-io%2Foperator?ref=badge_large)
