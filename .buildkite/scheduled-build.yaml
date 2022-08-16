@@ -15,8 +15,4 @@ steps:
       automatic:
         - exit_status: "*"
           limit: 2
-  - wait
-  - label: "run integration tests"
-    commands:
-      - ./scripts/cibuild generate_integration_tests
 
