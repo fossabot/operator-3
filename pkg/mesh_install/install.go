@@ -36,7 +36,7 @@ func (i *Installer) ApplyMesh() {
 		secret.Namespace = mesh.Spec.InstallNamespace
 
 		if i.Config.AutoCopyImagePullSecret {
-			k8sapi.Apply(i.K8sClient, secret, mesh, k8sapi.GetOrCreate)
+			k8sapi.Apply(i.K8sClient, secret, i.owner, k8sapi.GetOrCreate)
 		} else {
 			err := k8sapi.Apply(i.K8sClient, secret, i.owner, k8sapi.Get)
 			if err != nil {
