@@ -1,4 +1,6 @@
-#!/bin/bash
+#!/usr/bin/env bash
+
+set -e
 
 # an associative array mapping service name to k8s selector - this allows for querying without needing the pod name
 declare -A pods=( [control]='greymatter.io/cluster=controlensemble' [catalog]='greymatter.io/cluster=catalog' [edge]='greymatter.io/cluster=edge' \
@@ -9,7 +11,6 @@ test_lint () {
 }
 
 test_fast () {
-  go test ./config/...
   go test ./pkg/...
 }
 
@@ -61,81 +62,6 @@ test_no_mesh() {
     echo "TEST ${FUNCNAME[0]} FAILED: Mesh CR exists"
     exit 1
   fi
-
-  echo
-  echo "Test ${FUNCNAME[0]}............PASSED"
-}
-
-#  A test case.   Manually installs a mesh, removes it, and installs another to test correct lifecycle behavior
-test_install_remove_mesh () {
-# This test should run with the auto_apply_mesh operator config option set to false and assumes the operator is ready. It first
-# creates a mesh custom resource by applying the mesh resource yaml definition on the k3s cluster
-# The operator will detect the creation of the object and spin up the gm service. The test waits for those services to come online
-# before testing their accessibility. Both checks are used in other test cases. If those succeed, then the test moves to the tear down.
-# Using the kubectl wait command, each gm service is waited upon in the background until it is deleted. After sending out the background jobs
-# the test deletes the mesh cr and waits for every job to finish. The test then repeats the process of creating a mesh, this time, with a different name
-# to check if the operator works correctly when dealing with a fresh install in a non-fresh cluster.
-
-  echo "===> Test Case ${FUNCNAME[0]}"
-
-  echo """
-apiVersion: greymatter.io/v1alpha1
-kind: Mesh
-metadata:
-  name: mesh-1
-spec:
-  release_version: '1.7'
-  zone: default-zone
-  install_namespace: greymatter
-  watch_namespaces:
-  - default
-""" | $KUBECTL_CMD apply -f -
-
-  test_mesh_startup
-
-  test_reachable_mesh
-
-  # spawn jobs in the background for each wait command and keep track of their pid
- 
-  local pids=()
-  for pod in "${!pods[@]}"; do
-    $KUBECTL_CMD wait pod --for=delete --timeout=120s --selector ${pods[$pod]} &
-    pids+=($!)
-  done
-  $KUBECTL_CMD wait namespace/greymatter --for=delete --timeout=120s &
-  pids+=($!)
- # We start waiting for k8s to delete resources before we delete the mesh since kubectl wait must have a resource available
-  $KUBECTL_CMD delete Mesh mesh-1
-  # wait will return error codes if the pids are explicitly listed
-  wait "${pids[@]}"
-
-  if [ $? -gt 0 ]; then
-    echo "TEST ${FUNCNAME[0]} FAILED: pods were not cleaned up after mesh teardown"
-  fi
-
-  test_no_mesh
-
-  # Now that a mesh was created and destroyed, create another one
-
-    echo """
-apiVersion: greymatter.io/v1alpha1
-kind: Mesh
-metadata:
-  name: mesh-2
-spec:
-  release_version: '1.7'
-  zone: default-zone
-  install_namespace: greymatter
-  watch_namespaces:
-  - default
-""" | $KUBECTL_CMD apply -f -
-
-  $KUBECTL_CMD get -n greymatter Mesh | grep -q "mesh-2"
-  if [ $? -gt 0 ]; then
-    echo "TEST ${FUNCNAME[0]} FAILED: new mesh resource not found"
-    exit 1
-  fi
-  test_mesh_startup
 
   echo
   echo "Test ${FUNCNAME[0]}............PASSED"
@@ -319,7 +245,6 @@ test_integration() {
       install_operator "-t test=true -t operator_pull_policy=IfNotPresent -t auto_apply_mesh=false"
       test_operator_install
       test_no_mesh
-      test_install_remove_mesh
       test_reachable_mesh
     ;;
     *)
