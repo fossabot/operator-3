@@ -18,11 +18,11 @@ type statefulsetReconciler func(*appsv1.StatefulSet, *Installer)
 // TODO handle deletes
 // TODO rename
 func reconcileDeploymentLabels(deployment *appsv1.Deployment, i *Installer) {
-	if hasLabels(deployment.Spec.Template) {
+	if hasLabels(deployment.Labels) {
 		return
 	}
 	logger.Info("reconciling deployment labels", "name", deployment.Name)
-	deployment.Spec.Template = addLabels(deployment.Spec.Template, i.Mesh.Name, deployment.Name)
+	deployment.Labels = addLabels(deployment.Labels, i.Mesh.Name, deployment.Name)
 	annotations := deployment.Spec.Template.Annotations
 	_, injectSidecar := annotations[wellknown.ANNOTATION_INJECT_SIDECAR_TO_PORT]
 	if injectSidecar {
@@ -30,17 +30,17 @@ func reconcileDeploymentLabels(deployment *appsv1.Deployment, i *Installer) {
 			i.ConfigureSidecar(i.OperatorCUE, deployment.Name, annotations)
 		}()
 	}
-	k8sapi.Apply(i.K8sClient, deployment, i.owner, k8sapi.CreateOrUpdate)
+	k8sapi.Apply(i.K8sClient, deployment, nil, k8sapi.CreateOrUpdate)
 }
 
 // TODO handle deletes
 // TODO rename
 func reconcileStatefulSetLabels(statefulset *appsv1.StatefulSet, i *Installer) {
-	if hasLabels(statefulset.Spec.Template) {
+	if hasLabels(statefulset.Labels) {
 		return
 	}
 	logger.Info("reconciling statefulset labels", "name", statefulset.Name)
-	statefulset.Spec.Template = addLabels(statefulset.Spec.Template, i.Mesh.Name, statefulset.Name)
+	statefulset.Labels = addLabels(statefulset.Labels, i.Mesh.Name, statefulset.Name)
 	annotations := statefulset.Spec.Template.Annotations
 	_, injectSidecar := annotations[wellknown.ANNOTATION_INJECT_SIDECAR_TO_PORT]
 	if injectSidecar {
@@ -49,7 +49,7 @@ func reconcileStatefulSetLabels(statefulset *appsv1.StatefulSet, i *Installer) {
 		}()
 	}
 
-	k8sapi.Apply(i.K8sClient, statefulset, i.owner, k8sapi.CreateOrUpdate)
+	k8sapi.Apply(i.K8sClient, statefulset, nil, k8sapi.CreateOrUpdate)
 }
 
 func reconcileDeploymentSidecarInjection(deployment *appsv1.Deployment, i *Installer) {

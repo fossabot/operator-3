@@ -278,22 +278,22 @@ ReconciliationLoop:
 	}
 }
 
-func hasLabels(tmpl corev1.PodTemplateSpec) bool {
-	if tmpl.Labels == nil {
-		tmpl.Labels = make(map[string]string)
+func hasLabels(labels map[string]string) bool {
+	if labels == nil {
+		labels = make(map[string]string)
 	}
-	_, ok := tmpl.Labels[wellknown.LABEL_WORKLOAD]
+	_, ok := labels[wellknown.LABEL_WORKLOAD]
 	return ok
 }
-func addLabels(tmpl corev1.PodTemplateSpec, meshName, clusterName string) corev1.PodTemplateSpec {
-	if tmpl.Labels == nil {
-		tmpl.Labels = make(map[string]string)
+func addLabels(labels map[string]string, meshName, clusterName string) map[string]string {
+	if labels == nil {
+		labels = make(map[string]string)
 	}
 	// For service discovery
-	tmpl.Labels[wellknown.LABEL_CLUSTER] = clusterName
+	labels[wellknown.LABEL_CLUSTER] = clusterName
 	// For Spire identification
-	tmpl.Labels[wellknown.LABEL_WORKLOAD] = fmt.Sprintf("%s.%s", meshName, clusterName)
-	return tmpl
+	labels[wellknown.LABEL_WORKLOAD] = fmt.Sprintf("%s.%s", meshName, clusterName)
+	return labels
 }
 
 // Retrieves the image pull secret in the gm-operator namespace.
